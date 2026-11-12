@@ -1,0 +1,92 @@
+# 성주댐(성주호) 기본 설정
+# ----------------------------------------------------------------------
+# 제원 출처: 한국농어촌공사 저수지 제원 정보 (data/krc_reservoirs.csv, 2026-09-07 기준, 표준코드 4784010100)
+# [확인 필요] 표시 값만 추정값입니다.
+# 단위: 저수량 천㎥, 면적 ha 또는 km², 수심 mm
+# 다른 저수지는 웹앱/MCP에서 이름으로 검색하면 이 파일 대신 제원표 값이 자동 적용됩니다(engine/catalog.py).
+# ----------------------------------------------------------------------
+
+[reservoir]
+code = "4784010100"           # 농어촌공사 표준코드
+name = "성주"
+location = "경상북도 성주군 가천면 중산리"
+lat = 35.858                  # [확인 필요] 지도 표시용 대략 위치
+lon = 128.168                 # [확인 필요]
+completed = 1997
+total_storage = 38240.0       # 총저수량
+effective_storage = 28150.0   # 유효저수량
+dead_storage = 10090.0        # 사수량
+surface_area_km2 = 1.435      # 평균 수면적 ≈ 만수면적 205ha × 0.7 [근사]
+full_level = 184.7            # 만수위 EL.m
+dead_level = 162.2            # 사수위 EL.m
+full_area_ha = 205.0          # 만수면적 (제원표)
+evap_coeff = 0.8              # 수면증발 = 계수 × ET0
+
+[catchment]
+area_km2 = 149.6              # 유역면적 14,960ha
+
+[gr4j]                        # 유입량 모형 매개변수 (보정 전 기본값)
+x1 = 350.0    # 생산저류고 용량 (mm)
+x2 = 0.0      # 지하수 교환계수 (mm/day)
+x3 = 90.0     # 추적저류고 용량 (mm)
+x4 = 1.7      # 단위도 기저시간 (day)
+
+[irrigation]
+area_ha = 3217.0              # 수혜면적 (제원표)
+season_start = "05-01"        # 관개 시작 (써레질)
+puddling_end = "05-20"        # 써레질·이앙 종료
+season_end = "09-10"          # 관개 종료
+puddling_depth_mm = 140.0     # 써레질 용수량 (기간 중 균등 배분)
+percolation_mm = 4.0          # 침투량 (mm/day)
+ponding_target_mm = 40.0      # 유지 목표 담수심 (관개구역 평균)
+canal_capacity_mm = 20.0      # 용수로 일 최대 공급능력 (mm/day 환산)
+ponding_max_mm = 80.0         # 물꼬 높이(초과분은 배수)
+conveyance_efficiency = 0.80  # 송수효율 (용수로 손실 반영)
+# 작물계수 Kc: (월-일, 값) 구간별 선형보간
+kc_dates = ["05-21", "06-20", "07-20", "08-20", "09-10"]
+kc_values = [1.05, 1.10, 1.30, 1.20, 1.00]
+
+[environment]
+river_maintenance_flow = 5.0  # 하천유지유량 (천㎥/day) [확인 필요]
+
+[station]
+kma_asos_id = 279             # 인근 ASOS 지점 (279 = 구미) [확인 필요] 성주에 더 가까운 지점 검토
+lat = 35.858
+elevation_m = 150.0
+
+[dem]
+# 국토지리정보원 수치표고모델 — data/dem/ 폴더에 넣은 파일을 자동으로 읽습니다 (engine/dem.py)
+crs = ""                      # DEM 파일에 좌표계 정보가 없을 때만 지정 (예: "EPSG:5186" 중부원점, "EPSG:5179" UTM-K)
+search_radius_m = 6000        # 댐 대략 위치에서 출구를 찾을 반경
+max_cells = 600000            # 계산 격자 최대 셀 수 (클수록 정밀·느림)
+
+[vworld]
+# 브이월드 인증키: 환경변수 VWORLD_KEY 또는 .streamlit/secrets.toml (코드·GitHub에 키를 쓰지 마세요)
+referer = "http://localhost:8501"   # 인증키에 등록한 서비스 URL (배포 후에는 배포 주소로 변경)
+
+[api]
+# 행정안전부 재난안전데이터 공유플랫폼 (원천: 한국농어촌공사) 저수지 수위 API
+# 인증키: 환경변수 SAFETYDATA_KEY (또는 .streamlit/secrets.toml 의 SAFETYDATA_KEY)
+base_url = "https://www.safetydata.go.kr/V2/api/"
+dataset_10min = ""            # [확인 필요] 10분 저수지수위 데이터셋 ID (예: "DSSP-IF-00xxx") — 활용신청 후 상세페이지에서 복사
+dataset_daily = ""            # [확인 필요] 일 저수지수위 데이터셋 ID
+code_param = ""               # 저수지 코드로 거르는 요청변수명이 있으면 입력(없으면 받아서 걸러냄)
+supply_unit = "cms"           # 공급량 단위: "cms"(㎥/s) 또는 "cmd"(㎥/일) [확인 필요]
+
+[api.fields]                  # 자동 인식이 틀릴 때만 '표준열 = "원본필드명"' 으로 지정
+# time = "MSRM_DT"
+# rate = "STRG_RT"
+
+[operation]
+ops_cap_frac = 1.0            # 운영 상한 저수율(0~1). 저수지별 보정값이 있으면 그 값을 씀
+
+# 실측 보정 결과 (저수지 표준코드별) — 웹앱 '모델 검증' 탭에서 다시 구할 수 있음
+# 자료: 한국농어촌공사 일별 저수율 2015-01-01~2026-11-07, 기상청 ASOS(거창·합천·구미 거리가중)
+# 보정 2015–2022: NSE 0.734, RMSE 8.17%p / 검증 2023–2026.11: NSE 0.645, RMSE 9.47%p
+[calibrated."4784010100"]
+x1 = 94.129
+x2 = -4.327
+x3 = 38.152
+x4 = 2.199
+release_scale = 0.686   # 실제 공급 / 이론 필요수량
+cap_frac = 0.768             # 운영 상한 저수율 (이 이상은 방류)
