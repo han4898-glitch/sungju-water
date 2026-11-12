@@ -16,6 +16,19 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 
+import sys as _sys
+from pathlib import Path
+
+if os.name == "nt":  # Claude 데스크톱이 conda 활성화 없이 python.exe를 바로 실행해도 pywr(GLPK) DLL을 찾도록
+    for _d in (Path(_sys.prefix) / "Library" / "bin", Path(_sys.prefix) / "DLLs"):
+        if _d.exists():
+            os.environ["PATH"] = str(_d) + os.pathsep + os.environ.get("PATH", "")
+            try:
+                os.add_dll_directory(str(_d))
+            except (AttributeError, OSError):
+                pass
+os.chdir(Path(__file__).resolve().parent)  # 상대경로 자료(data/, .streamlit/)를 항상 찾도록
+
 try:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 except ModuleNotFoundError:  # mcp 2.x 에서 이름이 바뀜
@@ -23,7 +36,6 @@ except ModuleNotFoundError:  # mcp 2.x 에서 이름이 바뀜
 
 import pandas as pd
 
-from pathlib import Path
 
 from engine import PRESETS, Scenario, catalog, presets_for, geocode, krc_api, load_config, load_weather, prepare_inputs, run_scenario
 
@@ -86,6 +98,11 @@ def get_reservoir_specs(reservoir: str) -> dict:
     d = catalog.summary(row)
     if row["수혜면적"]:
         d["유역배율"] = round(float(row["유역면적"] / row["수혜면적"]), 2)
+    if str(row.get("_보정", "") or ""):
+        d["제원 보정"] = row["_보정"]
+    chk = catalog.spec_issues(row)
+    if chk["issues"]:
+        d["제원 점검 경고"] = chk["issues"]
     return {k: (v.item() if hasattr(v, "item") else v) for k, v in d.items()}
 
 

@@ -407,6 +407,35 @@ with tab_status:
         st.warning(f"제원표에 이 저수지의 수혜면적이 0(미기재)입니다. 같은 본부 저수지들의 '수혜면적÷유효저수량' 중앙값으로 "
                    f"**{irr_ha_:,.0f} ha**로 추정해 필요수량을 계산합니다. 관측 저수율이 있으면 "
                    f"'모델 검증' 탭의 공급계수 보정으로 실제 공급량에 맞출 수 있습니다.")
+    # 제원 점검: 보정 적용 여부 · 이상값 경고 · 직접 수정
+    if str(row.get("_보정", "") or ""):
+        st.info(f"제원표 오류를 보정해 적용 중입니다: {row['_보정']}")
+    _chk = catalog.spec_issues(row)
+    if _chk["issues"]:
+        st.warning("제원표 값이 이상해 보입니다 — " + " · ".join(_chk["issues"])
+                   + ". 아래 '제원 수정'에서 바로잡을 수 있습니다.")
+    with st.expander("제원 수정 (제원표 오류 보정)", expanded=bool(_chk["x10"])):
+        st.caption("농어촌공사 제원표 일부는 저수량이 천㎥ 대신 만㎥로 들어가 10배 작게 나옵니다. "
+                   "공사 누리집·현장 안내판·보도 등 확인한 값을 넣고 근거를 적어 저장하세요. "
+                   "저장하면 모의·최적화·예측 전체에 바로 적용됩니다 (data/spec_corrections.csv).")
+        _x = 10.0 if _chk["x10"] else 1.0
+        with st.form(f"spec_fix_{code}"):
+            sc1, sc2, sc3 = st.columns(3)
+            n_tot = sc1.number_input("총저수량 (천㎥)", min_value=0.0, value=float(row["총저수량"]) * _x, step=10.0)
+            n_eff = sc2.number_input("유효저수량 (천㎥)", min_value=0.0, value=float(row["유효저수량"] or 0) * _x, step=10.0)
+            n_irr = sc3.number_input("수혜면적 (ha)", min_value=0.0, value=float(row["수혜면적"] or 0), step=1.0)
+            n_note = st.text_input("근거", "제원표 저수량 단위 오류(만㎥) 추정 → ×10" if _chk["x10"] else "")
+            if _chk["x10"]:
+                st.caption("입력칸에는 제원표 값의 10배를 미리 넣어 두었습니다. 확인 후 저장하세요.")
+            if st.form_submit_button("저장하고 적용"):
+                if n_eff > n_tot:
+                    st.error("유효저수량이 총저수량보다 클 수 없습니다.")
+                else:
+                    catalog.save_correction(code, {"총저수량": n_tot, "유효저수량": n_eff,
+                                                   "사수량": round(n_tot - n_eff, 2), "수혜면적": n_irr or None},
+                                            n_note or "사용자 입력")
+                    st.cache_data.clear()
+                    st.rerun()
     with st.expander("전체 제원"):
         st.table(pd.Series({k: v for k, v in info.items()}, name="값").astype(str))
 
