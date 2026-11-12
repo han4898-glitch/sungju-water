@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.streamlit/secrets.toml
+data/cache_tiles/
+data/rawris_snapshot.json
+*.log
+app_log.txt
+test_result*.txt
+verify_result*.txt
+extend_weather_log*.txt
+*.tmp*
