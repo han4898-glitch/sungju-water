@@ -213,6 +213,10 @@ def config_for(code: str, base_cfg: dict) -> dict:
         r["lat"] = r["lon"] = None
     cfg["catchment"]["area_km2"] = float(row["유역면적"]) / 100
     cal = base_cfg.get("calibrated", {}).get(str(row["표준코드"])) or load_saved_calibration().get(str(row["표준코드"]))
+    if cal and "nse_val" in cal and float(cal["nse_val"]) < 0:
+        # 검증 기간 NSE가 0 미만 = 보정값이 평균값만도 못함 → 쓰지 않고 기본값 유지 (과적합·운영 변화 저수지)
+        cfg["calibration_rejected"] = {"nse_cal": cal.get("nse_cal"), "nse_val": cal["nse_val"]}
+        cal = None
     if cal:  # 실측으로 보정한 저수지: GR4J·공급계수·운영 상한 적용
         cfg["gr4j"] = {k: float(cal[k]) for k in ("x1", "x2", "x3", "x4", "release_scale", "cap_frac") if k in cal}
         cfg.setdefault("operation", {})["ops_cap_frac"] = float(cal.get("cap_frac", 1.0))
