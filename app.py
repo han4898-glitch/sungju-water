@@ -377,7 +377,31 @@ with tab_status:
     irr_ha_ = float(cfg["irrigation"]["area_ha"])
     irr_est_ = bool(cfg["irrigation"].get("area_estimated"))
     a4.metric("수혜면적" + (" (추정)" if irr_est_ else ""), f"{irr_ha_:,.0f} ha")
-    ratio = (row["유역면적"] / irr_ha_) if irr_ha_ > 0 else float("nan")
+    # 현재 저수량 (천㎥) — RAWRIS 실시간 저수율, 없으면 일별 저수율 최신값
+    _now_pct, _now_src = None, ""
+    if RAW_NOW and pd.notna(RAW_NOW.get("저수율")):
+        _now_pct = min(float(RAW_NOW["저수율"]), 100.0)
+        _now_src = f"RAWRIS 실시간 {pd.Timestamp(RAW_NOW['시각']):%Y-%m-%d %H:%M}"
+    elif krc_level.obs_path(code).exists():
+        try:
+            _o = pd.read_csv(krc_level.obs_path(code), parse_dates=["date"], index_col="date")["rate"].dropna()
+            if len(_o):
+                _now_pct, _now_src = min(float(_o.iloc[-1]), 100.0), f"일별 저수율 {_o.index[-1]:%Y-%m-%d}"
+        except Exception:
+            _now_pct = None
+    if _now_pct is not None:
+        _tot = float(cfg["reservoir"]["total_storage"])
+        _dead = float(cfg["reservoir"]["dead_storage"])
+        _eff = _tot - _dead
+        _cur = _eff * _now_pct / 100
+        v1_, v2_, v3_, v4_ = st.columns(4)
+        v1_.metric("현재 저수량 (유효)", f"{_cur:,.0f} 천㎥", f"저수율 {_now_pct:.1f}%", delta_color="off")
+        v2_.metric("현재 저수량 (사수량 포함)", f"{_dead + _cur:,.0f} 천㎥",
+                   f"총저수량의 {(_dead + _cur) / _tot * 100:.0f}%" if _tot > 0 else None, delta_color="off")
+        v3_.metric("만수까지 남은 용량", f"{_eff - _cur:,.0f} 천㎥")
+        v4_.metric("사수량", f"{_dead:,.0f} 천㎥")
+        st.caption(f"현재 저수량 = 유효저수량 {_eff:,.0f}천㎥ × 저수율 (농어촌공사 저수율은 유효저수량 기준) · 자료: {_now_src}")
+    ratio =(row["유역면적"] / irr_ha_) if irr_ha_ > 0 else float("nan")
     st.caption(f"유역배율(유역면적÷수혜면적) = {ratio:.1f} — 관개 저수지는 3 이상이면 용수공급 여건이 양호한 편으로 봅니다.")
     if irr_est_:
         st.warning(f"제원표에 이 저수지의 수혜면적이 0(미기재)입니다. 같은 본부 저수지들의 '수혜면적÷유효저수량' 중앙값으로 "
