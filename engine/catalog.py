@@ -25,12 +25,80 @@ REGION_ALIASES = {
 STOPWORDS = {"저수지", "댐", "지", "호", "알려줘", "보여줘", "찾아줘", "제원", "현황", "저수율", "수위", "의", "좀", "어디"}
 
 
+# 제원표 오류 보정 (원본 CSV는 그대로 두고 이 파일의 값으로 덮어씀)
+CORR_CSV = Path(__file__).resolve().parents[1] / "data" / "spec_corrections.csv"
+CORR_COLS = ["총저수량", "유효저수량", "사수량", "수혜면적", "유역면적", "만수면적", "제체높이"]
+
+
+def load_corrections() -> pd.DataFrame:
+    if not CORR_CSV.exists():
+        return pd.DataFrame(columns=["표준코드", *CORR_COLS, "근거"])
+    return pd.read_csv(CORR_CSV, dtype={"표준코드": str, "근거": str})
+
+
 @lru_cache(maxsize=1)
 def load_catalog(path: str = str(CATALOG_CSV)) -> pd.DataFrame:
     df = pd.read_csv(path, dtype={"표준코드": str, "연락처": str})
     df["시설명"] = df["시설명"].astype(str).str.strip()
     df["_addr"] = df["소재지"].fillna("")
+    df["_보정"] = ""
+    corr = load_corrections()
+    for _, c in corr.iterrows():
+        m = df["표준코드"] == str(c["표준코드"])
+        if not m.any():
+            continue
+        changed = []
+        for col in CORR_COLS:
+            if col in c and pd.notna(c[col]):
+                old = df.loc[m, col].iloc[0]
+                df.loc[m, col] = float(c[col])
+                changed.append(f"{col} {old:g}→{float(c[col]):g}")
+        df.loc[m, "_보정"] = ", ".join(changed) + (f" (근거: {c['근거']})" if pd.notna(c.get("근거")) else "")
     return df
+
+
+def save_correction(code: str, values: dict, note: str = "") -> None:
+    """제원 보정값 저장 (같은 저수지는 덮어씀) — 저장 후 카탈로그 캐시를 비움"""
+    corr = load_corrections()
+    corr = corr[corr["표준코드"] != str(code)]
+    row = {"표준코드": str(code), **{k: values.get(k) for k in CORR_COLS}, "근거": note}
+    corr = pd.concat([corr, pd.DataFrame([row])], ignore_index=True)
+    tmp = CORR_CSV.with_suffix(".tmp")
+    corr.to_csv(tmp, index=False, encoding="utf-8-sig")
+    tmp.replace(CORR_CSV)
+    load_catalog.cache_clear()
+
+
+def spec_issues(row: pd.Series) -> dict:
+    """제원 이상 여부 점검 → {"issues": [설명…], "x10": 저수량이 만㎥로 잘못 들어간 것으로 보이면 True}
+
+    - 평균수심(총저수량 ÷ 만수면적)이 제체높이의 8% 미만이면 저수량이 너무 작음
+      (전국 중앙값 34%, 10배 하면 정상 범위 15~80%에 들어오면 '만㎥ 단위 입력' 오류로 추정)
+    - 수혜면적 1ha당 총저수량이 0.5천㎥ 미만 (전국 하위 5% 아래)
+    - 유효저수량 > 총저수량
+    """
+    f = lambda c: float(row[c]) if c in row and pd.notna(row[c]) else 0.0
+    tot, eff, area, h, irr = f("총저수량"), f("유효저수량"), f("만수면적"), f("제체높이"), f("수혜면적")
+    issues, x10 = [], False
+    if tot > 0 and area > 0 and h > 0:
+        depth = tot / area / 10  # m (천㎥ ÷ ha ÷ 10)
+        ratio = depth / h
+        if ratio < 0.08:
+            issues.append(f"평균수심 {depth:.2f}m가 제체높이 {h:g}m의 {ratio:.0%}로 너무 얕음 (보통 25~45%)")
+            # 10배 했을 때 수심비가 정상 범위이고, 수혜면적 대비 저수량도 작을 때만 '만㎥ 입력'으로 판단
+            # (고삼처럼 저수량은 맞고 제체높이가 잘못된 경우를 거르기 위함)
+            x10 = 0.15 <= ratio * 10 <= 0.8 and (irr <= 0 or tot / irr < 3.0)
+            if not x10 and irr > 0 and tot / irr >= 3.0:
+                issues[-1] += " — 저수량은 수혜면적에 비해 정상이므로 제체높이·만수면적 오류 가능"
+        elif ratio > 1.5:
+            issues.append(f"평균수심 {depth:.1f}m가 제체높이 {h:g}m보다 훨씬 큼 — 만수면적이나 제체높이 오류 의심")
+    if tot > 0 and irr > 0 and tot / irr < 0.5:
+        issues.append(f"수혜면적 1ha당 저수량 {tot / irr:.2f}천㎥ — 전국 하위 5% 아래")
+    if eff > tot * 1.001 > 0:
+        issues.append(f"유효저수량 {eff:g}이 총저수량 {tot:g}보다 큼")
+    if x10:
+        issues.append("총·유효저수량이 천㎥가 아니라 만㎥로 입력된 것으로 보임 (10배 하면 정상 범위)")
+    return {"issues": issues, "x10": x10}
 
 
 def _tokens(query: str) -> list[str]:
