@@ -395,9 +395,9 @@ with tab_status:
         _eff = _tot - _dead
         _cur = _eff * _now_pct / 100
         v1_, v2_, v3_, v4_ = st.columns(4)
-        v1_.metric("현재 저수량 (유효)", f"{_cur:,.0f} 천㎥", f"저수율 {_now_pct:.1f}%", delta_color="off")
-        v2_.metric("현재 저수량 (사수량 포함)", f"{_dead + _cur:,.0f} 천㎥",
-                   f"총저수량의 {(_dead + _cur) / _tot * 100:.0f}%" if _tot > 0 else None, delta_color="off")
+        v1_.metric(f"현재 저수량 (유효 · 저수율 {_now_pct:.1f}%)", f"{_cur:,.0f} 천㎥")
+        v2_.metric(f"현재 저수량 (사수량 포함 · 총저수량의 {(_dead + _cur) / _tot * 100:.0f}%)" if _tot > 0
+                   else "현재 저수량 (사수량 포함)", f"{_dead + _cur:,.0f} 천㎥")
         v3_.metric("만수까지 남은 용량", f"{_eff - _cur:,.0f} 천㎥")
         v4_.metric("사수량", f"{_dead:,.0f} 천㎥")
         st.caption(f"현재 저수량 = 유효저수량 {_eff:,.0f}천㎥ × 저수율 (농어촌공사 저수율은 유효저수량 기준) · 자료: {_now_src}")
