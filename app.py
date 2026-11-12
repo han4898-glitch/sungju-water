@@ -300,7 +300,12 @@ with st.sidebar:
         st.warning("pywr 미설치 → reference 엔진으로 실행합니다.")
 
     g = st.session_state.gr4j_by_code.setdefault(code, dict(cfg["gr4j"]))
-    calibrated_ = str(code) in BASE_CFG.get("calibrated", {}) or str(code) in getattr(catalog, "load_saved_calibration", dict)()
+    calibrated_ = (str(code) in BASE_CFG.get("calibrated", {}) or str(code) in getattr(catalog, "load_saved_calibration", dict)()) \
+        and not cfg.get("calibration_rejected")
+    if cfg.get("calibration_rejected"):
+        _rj = cfg["calibration_rejected"]
+        st.caption(f"⚠ 실측 보정 결과(보정 NSE {_rj.get('nse_cal')}, 검증 NSE {_rj['nse_val']})가 검증 기간에 맞지 않아 "
+                   "보정값 대신 기본 매개변수를 씁니다. 실제 운영이 일반 관개 저수지와 다를 수 있습니다.")
     with st.expander("유입량 모형(GR4J)·운영 매개변수" + (" — 실측 보정값" if calibrated_ else "")):
         if calibrated_:
             st.caption("농어촌공사 일별 저수율과 기상청 ASOS로 보정한 값입니다 (config [calibrated] 또는 data/calibrated_params.json).")
