@@ -268,8 +268,10 @@ def drought_stage_now(reservoir: str = "성주") -> dict:
 @mcp.tool()
 def drought_supply_plan(reservoir: str = "성주", days: int | None = None, outlook_below: float = 33,
                         outlook_normal: float = 34, outlook_above: float = 33, reserve_pct: float = 20,
-                        optimize: bool = True) -> dict:
+                        optimize: bool = True, as_of: str | None = None) -> dict:
     """[한 번에] 가뭄을 예측해 공급량을 설정합니다. 예) "성주댐 가뭄 예측해서 공급량 설정해줘"
+    as_of = 과거 기준일 'YYYY-MM-DD' (예: "묘곡 2025-05-20 기준으로 공급량 설정해줘") → 그날까지의 관측만으로 계산하고
+    그 뒤 실제 저수율(actual_monthly)과 비교. 관개기(5~9월) 공급 조절을 보여 줄 때 사용.
     현재 저수율(RAWRIS 실시간) → 기상청 단기예보 + 1973년~ 과거 기상 앙상블로 저수율 확률 전망(관측 오차 보정)
     → 기본 규칙·앙상블 최적 규칙 비교 → 권장 규칙, 오늘 공급 비율, 월별 공급계획(천㎥).
     days 없으면 다음 관개기 끝(9/30)까지. outlook_* = 기상청 1·3개월 강수 전망(적음/비슷/많음 %).
@@ -294,9 +296,15 @@ def drought_supply_plan(reservoir: str = "성주", days: int | None = None, outl
     except Exception:  # noqa: BLE001
         pass
     probs = None if (outlook_below, outlook_normal, outlook_above) == (33, 34, 33) else (outlook_below, outlook_normal, outlook_above)
-    p = plan.make_plan(code, cfg, weather, _inputs(code, cfg), cfg["gr4j"], obs, raw, fc, days, probs, reserve_pct, optimize)
+    p = plan.make_plan(code, cfg, weather, _inputs(code, cfg), cfg["gr4j"], obs, raw, fc, days, probs, reserve_pct, optimize,
+                       today=pd.Timestamp(as_of) if as_of else None)
     m = p["monthly"].round(1)
-    return {"reservoir": cfg["reservoir"]["name"], "code": code, "summary": p["summary"],
+    extra = {}
+    if p.get("actual") is not None and len(p["actual"]):
+        a = p["actual"].resample("MS").last().round(1)
+        extra["actual_monthly_end_pct"] = {i.strftime("%Y-%m"): float(v) for i, v in a.items()}
+        extra["note"] = "과거 기준일 재현: 계산에는 기준일 이전 관측만 사용, actual_monthly_end_pct는 그 뒤 실제 월말 저수율"
+    return {**extra, "as_of": str(p.get("today", ""))[:10], "reservoir": cfg["reservoir"]["name"], "code": code, "summary": p["summary"],
             "current": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in p["now"].items()},
             "recommended_rule": p["rule_name"], "rule": p["rule"].to_dict(), "today_supply_factor": round(p["today_factor"], 3),
             "risk_pct": {k: round(v, 1) for k, v in p["risk"].items()},

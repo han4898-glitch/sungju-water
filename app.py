@@ -870,16 +870,27 @@ with tab_live:
         st.caption("현재 저수율(RAWRIS) → 기상청 예보 + 과거 기상 앙상블로 가뭄 예측 → 운영규칙 비교·최적화 → "
                    "권장 규칙, 오늘 공급 비율, 다음 관개기(9/30까지) 월별 공급계획을 한 번에 만듭니다. "
                    "MCP에서는 '성주댐 가뭄 예측해서 공급량 설정해줘'로 같은 계산을 합니다.")
-        pl1_, pl2_ = st.columns([1, 1])
+        pl1_, pl3_, pl2_ = st.columns([1, 1, 1])
         pl_res_ = pl1_.slider("지킬 비상 유효저수율 (%)", 0, 40, 20, 5, key="plan_res")
-        if pl2_.button("가뭄 예측해서 공급량 설정 (1~2분)", type="primary", width="stretch", key="plan_btn"):
+        _wmax = pd.Timestamp(weather.index.max()).date()
+        pl_day_ = pl3_.date_input("기준일 (과거 관개기로 바꿔 재현)", pd.Timestamp.now().date(),
+                                  min_value=pd.Timestamp("2016-01-01").date(), max_value=pd.Timestamp.now().date(),
+                                  key="plan_day",
+                                  help="오늘 대신 과거 날짜(예: 2025-05-20)를 고르면 '그날 이 앱을 썼다면 무엇을 권장했을까'를 계산하고, "
+                                       "그 뒤 실제 저수율과 비교합니다. 그날 이후의 기상·관측은 쓰지 않습니다.")
+        if pd.Timestamp(pl_day_) < pd.Timestamp.now().normalize() - pd.Timedelta(days=1):
+            pl3_.caption("과거 재현 모드 — 실시간·예보 대신 그날까지의 관측만 사용")
+        if pl2_.button("가뭄 예측해서 공급량 설정 (1~3분)", type="primary", width="stretch", key="plan_btn"):
             bar_p = st.progress(0.0, "시작…")
             _obs_p = (pd.read_csv(krc_level.obs_path(code), parse_dates=["date"], index_col="date")["rate"]
                       if krc_level.obs_path(code).exists() else None)
             try:
+                if pd.Timestamp(pl_day_) > pd.Timestamp(_wmax) + pd.Timedelta(days=1) and \
+                        pd.Timestamp(pl_day_) < pd.Timestamp.now().normalize() - pd.Timedelta(days=1):
+                    raise ValueError(f"기상자료가 {_wmax}까지라 그 이후 날짜는 재현할 수 없습니다.")
                 st.session_state.setdefault("plan_res_by_code", {})[code] = plan.make_plan(
                     code, cfg, weather, inputs, g, _obs_p, RAW_NOW, fc_future, None, probs_ if "probs_" in dir() else None,
-                    pl_res_, True, progress=lambda f, t: bar_p.progress(min(f, 1.0), t))
+                    pl_res_, True, today=pd.Timestamp(pl_day_), progress=lambda f, t: bar_p.progress(min(f, 1.0), t))
             except Exception as e:
                 st.error(f"공급계획을 만들지 못했습니다 — {e}")
             bar_p.empty()
@@ -892,6 +903,44 @@ with tab_live:
                        f"{len(pr_['members'])}개 해 · 관측 오차 보정 {'적용' if pr_['corrected'] else '미적용'} · "
                        "공급계획 = 각 해 기상으로 모의한 공급량의 가중 평균")
             st.session_state.setdefault("esp_opt", {})[code] = pr_["rule"]  # 오늘의 판단·모의 실행에도 추가
+            _d = pr_.get("daily")
+            if _d is not None and float(_d["필요수량(천㎥)"].sum()) > 1:
+                _t0 = pd.Timestamp(pr_.get("today", _d.index[0])).strftime("%Y-%m-%d")
+                st.markdown(f"##### 📅 관개기 공급량 조절 — {_t0} 기준 권장 규칙")
+                _irr = _d[_d["필요수량(천㎥)"] > 0.5]
+                fig_s = go.Figure()
+                fig_s.add_trace(go.Bar(x=_d.index, y=_d["필요수량(천㎥)"], name="필요수량 (논에 필요한 물)",
+                                       marker_color="#cbd5e1"))
+                fig_s.add_trace(go.Scatter(x=_d.index, y=_d["공급계획(천㎥)"], name="권장 공급량", mode="lines",
+                                           line=dict(color="#1d4ed8", width=2.5)))
+                fig_s.add_trace(go.Scatter(x=_irr.index, y=_irr["공급 비율(%)"], name="공급 비율 (%, 오른쪽 축)",
+                                           mode="lines", line=dict(color="#ea580c", width=1.5, dash="dot"), yaxis="y2"))
+                fig_s.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), barmode="overlay",
+                                    yaxis=dict(title="천㎥/일"),
+                                    yaxis2=dict(title="공급 비율 (%)", overlaying="y", side="right", range=[0, 110], showgrid=False),
+                                    legend=dict(orientation="h", y=1.12, x=0))
+                st.plotly_chart(fig_s, width="stretch")
+                st.caption("회색 막대 = 그날 논에 필요한 물(비 온 날은 줄어듦) · 파란 선 = 권장 규칙대로 내보낼 양 "
+                           "(53개 해 기상 평균) · 주황 점선 = 필요수량 대비 공급 비율. 저수율이 규칙의 경계 아래로 내려가는 해가 "
+                           "많아질수록 공급 비율이 낮아집니다.")
+                _b = pr_["band"]
+                fig_b = go.Figure()
+                fig_b.add_trace(go.Scatter(x=_b.index, y=_b["p90"], line=dict(width=0), showlegend=False, hoverinfo="skip"))
+                fig_b.add_trace(go.Scatter(x=_b.index, y=_b["p10"], fill="tonexty", fillcolor="rgba(37,99,235,0.15)",
+                                           line=dict(width=0), name="예측 범위 (10~90%)"))
+                fig_b.add_trace(go.Scatter(x=_b.index, y=_b["p50"], name="예측 중앙값", line=dict(color="#1d4ed8", width=2.5)))
+                _act = pr_.get("actual")
+                if _act is not None and len(_act):
+                    fig_b.add_trace(go.Scatter(x=_act.index, y=_act.values, name="실제 관측 저수율",
+                                               line=dict(color="#111827", width=2)))
+                for c_ in ((pr_["rule"].curves_pct or []) if getattr(pr_["rule"], "basis", "absolute") == "absolute" else []):
+                    fig_b.add_hline(y=c_, line_dash="dot", line_color="#94a3b8",
+                                    annotation_text=f"절감 경계 {c_:.0f}%", annotation_position="top left")
+                fig_b.update_layout(height=340, margin=dict(l=10, r=10, t=30, b=10), yaxis=dict(title="유효저수율 (%)", range=[0, 100]),
+                                    legend=dict(orientation="h", y=1.12, x=0))
+                st.plotly_chart(fig_b, width="stretch")
+                if _act is not None and len(_act):
+                    st.caption("검은 선 = 그 뒤 실제로 관측된 저수율 (계산에는 쓰지 않음). 예측 범위 안에 들어오는지로 예측이 맞았는지 확인합니다.")
 
 
 # =============================================================== 모의 실행 ==

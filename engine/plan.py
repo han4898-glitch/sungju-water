@@ -37,6 +37,13 @@ def make_plan(code: str, cfg: dict, weather: pd.DataFrame, inputs: pd.DataFrame,
               days: int | None = None, outlook: tuple[float, float, float] | None = None, reserve_pct: float = 20.0,
               optimize: bool = True, today: pd.Timestamp | None = None, maxiter: int = 8, progress=None) -> dict:
     today = pd.Timestamp(today or pd.Timestamp.now()).normalize()
+    # 과거 기준일 재현: "그날 이 앱을 썼다면?" — 그날 이전 관측만 쓰고(실시간·예보 제외), 이후 실제 저수율과 비교
+    past = today < pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+    obs_full = obs_rate
+    if past:
+        raw, forecast = None, None
+        if obs_rate is not None:
+            obs_rate = obs_rate.loc[:today - pd.Timedelta(days=1)]
     if days is None:  # 기본: 다음(또는 이번) 관개기 끝(9/30)까지 — 11월에 물어도 내년 봄·여름 공급계획이 나오도록
         sep30 = pd.Timestamp(year=today.year if today.month <= 9 else today.year + 1, month=9, day=30)
         days = int((sep30 - today).days) + 1
@@ -47,7 +54,8 @@ def make_plan(code: str, cfg: dict, weather: pd.DataFrame, inputs: pd.DataFrame,
         raise ValueError("과거 기상 해가 3개 미만이라 가뭄 예측을 할 수 없습니다 (기상청 관측자료를 받아 주세요).")
     prep = esp.prepare_members(members, cfg, gr4j)
     w = esp.tercile_weights(members, today, days, outlook)
-    errs = esp.hindcast_errors(inputs, cfg, obs_rate, days) if obs_rate is not None and obs_rate.dropna().size > 730 else None
+    errs = (esp.hindcast_errors(inputs.loc[:today - pd.Timedelta(days=1)], cfg, obs_rate, days, before=today)
+            if obs_rate is not None and obs_rate.dropna().size > 730 else None)
     rules = dict(presets_for(cfg))
     if optimize:
         if progress:
@@ -71,6 +79,11 @@ def make_plan(code: str, cfg: dict, weather: pd.DataFrame, inputs: pd.DataFrame,
         "월말 저수율 중앙(%)": r["band"]["p50"].resample("MS").last(),
         "월말 저수율 하위10%(%)": r["band"]["p10"].resample("MS").last(),
     })
+    daily = pd.DataFrame({"필요수량(천㎥)": (dem * wv).sum(axis=1), "공급계획(천㎥)": (sup * wv).sum(axis=1)})
+    daily["공급 비율(%)"] = np.where(daily["필요수량(천㎥)"] > 0.5, daily["공급계획(천㎥)"] / daily["필요수량(천㎥)"] * 100, np.nan)
+    actual = None
+    if past and obs_full is not None:
+        actual = obs_full.loc[today:end].dropna().clip(upper=100)
     monthly["공급 비율(%)"] = np.where(monthly["필요수량(천㎥)"] > 1,
                                    monthly["공급계획(천㎥)"] / monthly["필요수량(천㎥)"] * 100, np.nan)
     monthly.index = monthly.index.strftime("%Y-%m")
@@ -83,6 +96,7 @@ def make_plan(code: str, cfg: dict, weather: pd.DataFrame, inputs: pd.DataFrame,
     return {"now": now, "rule_name": best, "rule": sc, "today_factor": float(f_today), "forecast_rain_mm": fc_rain,
             "risk": r["risk"], "band": r["band"], "compare": cmp, "monthly": monthly, "members": list(members),
             "weights": w, "corrected": r["corrected"], "days": days, "reserve_pct": reserve_pct,
+            "daily": daily, "actual": actual, "past": past, "today": today,
             "summary": summary_text(now, best, sc, f_today, r, monthly, days, len(members))}
 
 
