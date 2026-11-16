@@ -118,6 +118,10 @@ def search(query: str, limit: int = 10) -> pd.DataFrame:
     toks = _tokens(query)
     if not toks:
         return df.head(0)
+    # "묘곡지"·"성주지"처럼 '지'로 끝나면 저수지명 접미사로 보고 뗌 (그 이름이 실제로 있을 때만)
+    names = df["시설명"].astype(str)
+    toks = [t[:-1] if (len(t) >= 3 and t.endswith("지") and not names.str.contains(t, regex=False).any()
+                       and names.str.contains(t[:-1], regex=False).any()) else t for t in toks]
     score = pd.Series(0.0, index=df.index)
     name_hit = pd.Series(False, index=df.index)
     for t in toks:
@@ -131,7 +135,8 @@ def search(query: str, limit: int = 10) -> pd.DataFrame:
             if t in aliases:
                 score += (df["본부"] == region) * 2
     # 이름에 걸린 게 하나라도 있으면 이름 일치 후보 위주로
-    cand = df[(score > 0) & (name_hit | ~name_hit.any())].assign(_score=score)
+    keep = (score > 0) & (name_hit if name_hit.any() else True)
+    cand = df[keep].assign(_score=score[keep])
     return cand.sort_values(["_score", "총저수량"], ascending=[False, False]).head(limit).drop(columns=["_addr"])
 
 

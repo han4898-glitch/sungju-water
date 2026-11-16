@@ -31,7 +31,7 @@ def fetch_tile(z: int, x: int, y: int) -> np.ndarray:
     if cache.exists():
         return np.asarray(Image.open(cache).convert("RGB"))
     req = urllib.request.Request(URL.format(z=z, x=x, y=y), headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=8) as r:
         data = r.read()
     img = Image.open(io.BytesIO(data)).convert("RGB")
     try:
@@ -43,11 +43,15 @@ def fetch_tile(z: int, x: int, y: int) -> np.ndarray:
 
 
 def _mosaic_tiles(z: int, tx0: int, ty0: int, tx1: int, ty1: int) -> np.ndarray:
+    """타일을 동시에(8개씩) 받아 한 장으로 붙임"""
+    from concurrent.futures import ThreadPoolExecutor
+
     m = np.zeros(((ty1 - ty0 + 1) * TILE, (tx1 - tx0 + 1) * TILE, 3), np.uint8)
-    for ty in range(ty0, ty1 + 1):
-        for tx in range(tx0, tx1 + 1):
-            t = fetch_tile(z, tx, ty)
-            m[(ty - ty0) * TILE:(ty - ty0 + 1) * TILE, (tx - tx0) * TILE:(tx - tx0 + 1) * TILE] = t[:TILE, :TILE]
+    jobs = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        tiles = list(ex.map(lambda j: fetch_tile(z, j[0], j[1]), jobs))
+    for (tx, ty), t in zip(jobs, tiles):
+        m[(ty - ty0) * TILE:(ty - ty0 + 1) * TILE, (tx - tx0) * TILE:(tx - tx0 + 1) * TILE] = t[:TILE, :TILE]
     return m
 
 
