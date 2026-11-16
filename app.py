@@ -23,6 +23,7 @@ from engine.pywr_engine import PYWR_AVAILABLE
 from engine import dem as demlib
 from engine import geocode
 from engine import vworld
+from engine import imagery
 from engine import kma
 from engine import krc_level
 from engine.realtime import project, today_decision
@@ -137,18 +138,102 @@ def vworld_texture_fn():
     return lambda lon, lat: vworld.texture_for_grid(key, lon, lat, ref)
 
 
+def satellite_texture_fn(used: dict):
+    """3D 지형에 입힐 위성영상 함수: 브이월드(키가 있으면) → 안 되면 Esri World Imagery(키 없음)"""
+    vw = vworld_texture_fn()
+
+    def f(lon, lat):
+        if vw is not None:
+            try:
+                rgb = vw(lon, lat)
+                used["src"] = "브이월드(국토교통부) 위성영상"
+                return rgb
+            except Exception:
+                pass
+        rgb = imagery.texture_for_grid(lon, lat)
+        used["src"] = imagery.ATTRIBUTION
+        return rgb
+    return f
+
+
 def show_3d(dem_a, ext_, lv, below_, title, exag=2.0, height=560, max_px=180, key="t"):
-    tex = vworld_texture_fn()
-    use = st.checkbox("항공사진 입히기 (브이월드)", value=tex is not None, disabled=tex is None, key=f"tex_{key}",
-                      help=None if tex else "VWORLD_KEY(브이월드 인증키)를 설정하면 사용할 수 있습니다.")
+    used = {}
+    use = st.checkbox("🛰️ 위성영상 입히기", value=True, key=f"tex_{key}",
+                      help="브이월드 키가 있으면 브이월드, 없거나 막히면 Esri 무료 위성영상을 지형에 입힙니다.")
     try:
-        fig = surface_figure(dem_a, ext_, lv, below_, title, exag, height, max_px, tex if use else None)
-    except Exception as e:  # 키·도메인 오류, 네트워크 차단 등
-        st.warning(f"브이월드 영상을 불러오지 못해 표고 색으로 표시합니다 — {e}")
+        fig = surface_figure(dem_a, ext_, lv, below_, title, exag, height, max_px,
+                             satellite_texture_fn(used) if use else None)
+    except Exception as e:  # 네트워크 차단 등
+        st.warning(f"위성영상을 불러오지 못해 표고 색으로 표시합니다 — {e}")
+        used = {}
         fig = surface_figure(dem_a, ext_, lv, below_, title, exag, height, max_px, None)
     st.plotly_chart(fig, width="stretch")
-    if use and tex is not None:
-        st.caption("배경 영상: 브이월드(국토교통부) 위성영상 · 지형: 국토지리정보원 수치표고모델")
+    st.caption(("배경: " + used["src"] + " · " if used.get("src") else "색 = 표고 · ")
+               + "지형: 국토지리정보원 수치표고모델(90m) · 마우스로 돌려 보기")
+
+
+def satellite_map(points: pd.DataFrame, zoom: int = 13, height: int = 420):
+    """위성영상 위에 저수지·댐 위치 표시 (지도는 사용자의 브라우저가 Esri 타일을 직접 받음)"""
+    lat0, lon0 = float(points["lat"].iloc[0]), float(points["lon"].iloc[0])
+    use_map = hasattr(go, "Scattermap")
+    Tr = go.Scattermap if use_map else go.Scattermapbox
+    fig = go.Figure(Tr(lat=points["lat"], lon=points["lon"], mode="markers+text",
+                       text=points.get("label", [""] * len(points)), textposition="top center",
+                       textfont=dict(color="white", size=14),
+                       marker=dict(size=points.get("msize", [16] * len(points)),
+                                   color=points.get("color", ["#2563eb"] * len(points))),
+                       hoverinfo="text"))
+    mp = dict(style="white-bg", layers=[imagery.map_layer()], center=dict(lat=lat0, lon=lon0), zoom=zoom)
+    fig.update_layout(height=height, margin=dict(l=0, r=0, t=0, b=0), showlegend=False,
+                      **({"map": mp} if use_map else {"mapbox": mp}))
+    st.plotly_chart(fig, width="stretch", config={"scrollZoom": True})
+
+
+STAGE_COLOR = {"정상": "#16a34a", "관심": "#ca8a04", "주의": "#ea580c", "경계": "#dc2626", "심각": "#991b1b"}
+
+
+def big_cards(items: list[tuple[str, str, str, str]]):
+    """큰 숫자 카드 한 줄: (제목, 값, 설명, 색)"""
+    cells = "".join(
+        f"""<div style="flex:1;min-width:150px;background:var(--secondary-background-color,#f4f6fa);border-radius:14px;
+        padding:14px 18px;border-left:7px solid {c}"><div style="font-size:0.85rem;opacity:.75">{t}</div>
+        <div style="font-size:2.1rem;font-weight:800;line-height:1.15;color:{c}">{v}</div>
+        <div style="font-size:0.8rem;opacity:.7">{sub}</div></div>""" for t, v, sub, c in items)
+    st.markdown(f'<div style="display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 12px 0">{cells}</div>',
+                unsafe_allow_html=True)
+
+
+@st.cache_data(show_spinner=False, ttl=6 * 3600)
+def cached_banner_img(lat: float, lon: float) -> str | None:
+    """저수지 위성사진(배너) → base64 문자열, 못 받으면 None"""
+    import base64
+    try:
+        return base64.b64encode(imagery.thumbnail(lat, lon, 1600, 380, 15)).decode()
+    except Exception:
+        return None
+
+
+def model_flow_dot(name: str) -> str:
+    return f"""
+digraph G {{ rankdir=LR; node [shape=box, style="rounded,filled", fillcolor="#eef2ff", fontname="sans-serif"];
+  wx [label="기상청 ASOS\\n강수·기온·습도·풍속·일조"]; et [label="ET0\\n(FAO-56 PM)"];
+  gr [label="GR4J\\n유역 유출"]; dm [label="논 수요량\\n(담수심 물수지)"];
+  res [label="{name} (pywr Storage)", fillcolor="#dbeafe"]; irr [label="관개구역"]; env [label="하천유지유량"];
+  sp [label="월류"]; ev [label="수면증발"]; rule [label="운영규칙\\n저수율 구간·예보", fillcolor="#fef3c7"];
+  wx -> et; wx -> gr; et -> gr; et -> dm; wx -> dm; gr -> res [label="유입량"]; dm -> rule [label="필요수량"];
+  rule -> irr [style=dashed]; res -> irr; res -> env; res -> sp; res -> ev; res -> rule [style=dashed, label="저수율"]; }}
+"""
+
+
+PLAN_FLOW_DOT = """
+digraph P { rankdir=LR; node [shape=box, style="rounded,filled", fillcolor="#eef2ff", fontname="sans-serif"];
+  now [label="① 현재 저수율\\nRAWRIS 실시간", fillcolor="#dbeafe"];
+  wx [label="② 기상 앙상블\\n기상청 예보 + 과거 53개 해"];
+  sim [label="③ 해마다 모의\\nGR4J 유입 · 논 필요수량\\n· 저수지 물수지"];
+  opt [label="④ 규칙 비교·최적화\\n부족지수(SI) 최소\\n+ 비상저수량 지키기", fillcolor="#fef3c7"];
+  out [label="⑤ 결과\\n오늘 공급 비율\\n월별 공급계획\\n저수율 예측 범위", fillcolor="#dcfce7"];
+  now -> sim; wx -> sim; sim -> opt [label="53가지 미래"]; opt -> out [label="권장 규칙"]; }
+"""
 
 
 DEM_HELP = """**국토지리정보원 DEM 넣는 법** (국토지리정보원 DEM은 실시간 API가 아니라 파일로 제공됩니다)
@@ -330,8 +415,46 @@ with st.sidebar:
 inputs = cached_inputs(str(DATA / wfile), code, g["x1"], g["x2"], g["x3"], g["x4"], W_MTIME,
                        float(g.get("release_scale", 1.0)), cfg["reservoir"].get("lat"))
 
-st.title(f"💧 {RES_NAME} 저수지 용수공급 운영 시나리오 분석")
-st.caption("GR4J 유입량 모형 + 논 담수심 수요량 모형 + pywr 저수지 운영 모델 · 경북 농업용 저수지 가뭄 대응")
+# ------------------------------------------------------------ 첫 화면 배너 --
+_obs_b = None
+if krc_level.obs_path(code).exists():
+    try:
+        _obs_b = pd.read_csv(krc_level.obs_path(code), parse_dates=["date"], index_col="date")["rate"]
+    except Exception:
+        _obs_b = None
+_now_b = plan.current_state(code, cfg, _obs_b, RAW_NOW)
+_img_b = cached_banner_img(float(cfg["reservoir"]["lat"]), float(cfg["reservoir"]["lon"])) \
+    if cfg["reservoir"].get("lat") is not None else None
+_stg_b = str(_now_b.get("stage") or "-")
+_col_b = STAGE_COLOR.get(_stg_b, "#64748b")
+_bg_b = (f"linear-gradient(90deg, rgba(10,25,60,.88) 0%, rgba(10,25,60,.55) 45%, rgba(10,25,60,.05) 100%), "
+         f"url(data:image/jpeg;base64,{_img_b}) center/cover" if _img_b
+         else "linear-gradient(120deg,#1e3a8a,#2563eb 60%,#60a5fa)")
+_pn_b = _now_b.get("pct_of_normal")
+_pn_txt = f"평년 대비 {_pn_b:.0f}%" if _pn_b is not None and not pd.isna(_pn_b) else "평년 자료 없음"
+st.markdown(f"""
+<div style="border-radius:18px;padding:26px 30px;margin:0 0 6px 0;color:#fff;min-height:190px;background:{_bg_b};
+     display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 4px 14px rgba(0,0,0,.18)">
+  <div>
+    <div style="font-size:.95rem;opacity:.85">💧 경북 농업용 저수지 가뭄 대응 · 용수공급 운영 시나리오 분석</div>
+    <div style="font-size:2.3rem;font-weight:800;line-height:1.2">{RES_NAME} 저수지</div>
+    <div style="font-size:.9rem;opacity:.85">{cfg['reservoir']['location']} · 총저수량 {cfg['reservoir']['total_storage']:,.0f}천㎥ ·
+      수혜면적 {cfg['irrigation']['area_ha']:,.0f}ha</div>
+  </div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:14px">
+    <div style="background:rgba(255,255,255,.16);border-radius:12px;padding:8px 16px">
+      <div style="font-size:.8rem;opacity:.85">현재 유효저수율</div>
+      <div style="font-size:2.2rem;font-weight:800;line-height:1.1">{_now_b['pct']:.1f}%</div></div>
+    <div style="background:rgba(255,255,255,.16);border-radius:12px;padding:8px 16px">
+      <div style="font-size:.8rem;opacity:.85">{_pn_txt}</div>
+      <div style="font-size:1.6rem;font-weight:800;line-height:1.3">농업가뭄
+        <span style="background:{_col_b};border-radius:8px;padding:0 10px">{_stg_b}</span></div></div>
+    <div style="font-size:.75rem;opacity:.8;margin-left:auto;text-align:right">{_now_b['source']} {str(_now_b['time'])[:16]}<br>
+      {imagery.ATTRIBUTION if _img_b else ''}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+st.caption("GR4J 유입량 모형 + 논 담수심 수요량 모형 + pywr 저수지 운영 모델 · 가뭄 단계: 평년 대비 저수율 "
+           "(70% 초과 정상 · 60~70 관심 · 50~60 주의 · 40~50 경계 · 40 이하 심각)")
 
 tab_status, tab_live, tab_run, tab_cmp, tab_val, tab_dry, tab_info = st.tabs(
     ["저수지 현황", "실시간 운영", "② 모의 실행·대시보드", "③ 시나리오 비교", "④ 모델 검증", "⑤ 가뭄 대응 검증", "모델 개요"])
@@ -447,15 +570,16 @@ with tab_status:
     st.markdown("#### 위치")
     if cfg["reservoir"].get("lat") is not None:
         pts_ = pd.DataFrame({"lat": [cfg["reservoir"]["lat"]], "lon": [cfg["reservoir"]["lon"]],
-                             "size": [250], "color": ["#2563eb"]})
+                             "size": [250], "color": ["#2563eb"], "label": [RES_NAME], "msize": [18]})
         da_loc, _ = get_dem_analysis(cfg)
         dam_txt = ""
         if da_loc is not None and da_loc.outlet_lonlat:
             pts_ = pd.concat([pts_, pd.DataFrame({"lat": [da_loc.outlet_lonlat[1]], "lon": [da_loc.outlet_lonlat[0]],
-                                                  "size": [120], "color": ["#dc2626"]})], ignore_index=True)
+                                                  "size": [120], "color": ["#dc2626"], "label": ["댐"],
+                                                  "msize": [12]})], ignore_index=True)
             dam_txt = f" · 빨강 = 댐(DEM 유역 출구 {da_loc.outlet_lonlat[1]:.4f}, {da_loc.outlet_lonlat[0]:.4f})"
-        st.map(pts_, latitude="lat", longitude="lon", size="size", color="color", zoom=12)
-        st.caption(f"파랑 = {RES_NAME} 저수지 ({cfg['reservoir']['lat']:.4f}, {cfg['reservoir']['lon']:.4f} · "
+        satellite_map(pts_, zoom=14)
+        st.caption(f"🛰️ {imagery.ATTRIBUTION} · 파랑 = {RES_NAME} 저수지 ({cfg['reservoir']['lat']:.4f}, {cfg['reservoir']['lon']:.4f} · "
                    f"{coords['source'] if coords else ''}){dam_txt} · 소재지: {info['소재지']}")
     else:
         st.warning("이 저수지의 좌표를 찾지 못했습니다. 사이드바 '위치'에서 직접 입력하세요.")
@@ -870,6 +994,10 @@ with tab_live:
         st.caption("현재 저수율(RAWRIS) → 기상청 예보 + 과거 기상 앙상블로 가뭄 예측 → 운영규칙 비교·최적화 → "
                    "권장 규칙, 오늘 공급 비율, 다음 관개기(9/30까지) 월별 공급계획을 한 번에 만듭니다. "
                    "MCP에서는 '성주댐 가뭄 예측해서 공급량 설정해줘'로 같은 계산을 합니다.")
+        with st.expander("🔎 그림으로 보는 계산 흐름 (버튼을 누르면 일어나는 일)", expanded=True):
+            st.graphviz_chart(PLAN_FLOW_DOT)
+            st.caption("③ 안에서 매일 돌아가는 모델 (기상 → 유입량·필요수량 → 저수지 → 운영규칙)")
+            st.graphviz_chart(model_flow_dot(RES_NAME))
         pl1_, pl3_, pl2_ = st.columns([1, 1, 1])
         pl_res_ = pl1_.slider("지킬 비상 유효저수율 (%)", 0, 40, 20, 5, key="plan_res")
         _wmax = pd.Timestamp(weather.index.max()).date()
@@ -896,6 +1024,25 @@ with tab_live:
             bar_p.empty()
         pr_ = st.session_state.get("plan_res_by_code", {}).get(code)
         if pr_:
+            _bnd = pr_["band"]
+            _end = _bnd.index[-1]
+            _p50, _p10 = float(_bnd["p50"].iloc[-1]), float(_bnd["p10"].iloc[-1])
+            _sev = next((v for k, v in pr_["risk"].items() if k.startswith("심각 부족")), None)
+            _pm = pr_["monthly"]
+            _need, _supp = float(_pm["필요수량(천㎥)"].sum()), float(_pm["공급계획(천㎥)"].sum())
+            _tf = pr_["today_factor"]
+            _d0 = pr_.get("daily")
+            _irr_today = _d0 is not None and len(_d0) and float(_d0["필요수량(천㎥)"].iloc[0]) > 0.5
+            big_cards([
+                ("오늘 공급 비율", f"{_tf:.0%}", "필요수량 대비" + ("" if _irr_today else " · 비관개기(규칙상 비율)"),
+                 "#16a34a" if _tf >= 0.95 else ("#ea580c" if _tf >= 0.75 else "#dc2626")),
+                (f"{_end:%m월 %d일} 저수율 (중앙)", f"{_p50:.0f}%", f"나쁜 경우(하위 10%) {_p10:.0f}%",
+                 "#2563eb" if _p10 >= 30 else "#ea580c"),
+                ("심각 부족 확률", "—" if _sev is None else f"{_sev:.0f}%", "10일 동안 필요수량의 절반 이상 부족",
+                 "#16a34a" if (_sev or 0) < 10 else ("#ea580c" if _sev < 25 else "#dc2626")),
+                ("관개기 공급계획 합계", f"{_supp:,.0f}", f"천㎥ · 필요수량의 {(_supp / _need * 100) if _need > 1 else 0:.0f}%",
+                 "#1f3f8f"),
+            ])
             st.success(pr_["summary"].replace("\n", "  \n"))
             pm_ = pr_["monthly"]
             st.dataframe(pm_.style.format("{:,.1f}", na_rep="-"), width="stretch")
@@ -1044,7 +1191,7 @@ with tab_run:
                 if dem_state == "no_file":
                     st.caption("data/dem/ 에 국토지리정보원 DEM을 넣으면 여기에 수면 범위 지도가 표시됩니다 ('저수지 현황' 탭 안내 참고).")
                 if r.get("lat") is not None:
-                    st.map(pd.DataFrame({"lat": [r["lat"]], "lon": [r["lon"]]}), zoom=12)
+                    satellite_map(pd.DataFrame({"lat": [r["lat"]], "lon": [r["lon"]], "label": [RES_NAME]}), zoom=14)
                     st.caption("저수지 위치 (DEM이 없어 수면 범위 대신 위치만 표시)")
                 else:
                     st.info(r["location"])
@@ -1378,12 +1525,5 @@ with tab_info:
 관개 공급 상한 = 필요수량 × 저수율 구간 계수 × 예보 계수.
 우선순위는 수면증발 → 관개 → 하천유지유량 → 저류 → 월류 순입니다.
 """)
-    st.graphviz_chart("""
-digraph G { rankdir=LR; node [shape=box, style="rounded,filled", fillcolor="#eef2ff", fontname="sans-serif"];
-  wx [label="기상청 ASOS\\n강수·기온·습도·풍속·일조"]; et [label="ET0\\n(FAO-56 PM)"];
-  gr [label="GR4J\\n유역 유출"]; dm [label="논 수요량\\n(담수심 물수지)"];
-  res [label="성주댐 (pywr Storage)", fillcolor="#dbeafe"]; irr [label="관개구역"]; env [label="하천유지유량"];
-  sp [label="월류"]; ev [label="수면증발"]; rule [label="운영규칙\\n저수율 구간·예보", fillcolor="#fef3c7"];
-  wx -> et; wx -> gr; et -> gr; et -> dm; wx -> dm; gr -> res [label="유입량"]; dm -> rule [label="필요수량"];
-  rule -> irr [style=dashed]; res -> irr; res -> env; res -> sp; res -> ev; res -> rule [style=dashed, label="저수율"]; }
-""")
+    st.graphviz_chart(model_flow_dot(RES_NAME))
+
