@@ -108,14 +108,25 @@ def cached_dem_analysis(files_key: tuple, code: str, lat: float, lon: float, tar
                           full_level, dam_height)
 
 
-def get_dem_analysis(cfg_: dict):
-    """data/dem/ 의 국토지리정보원 DEM(전국 90m 등)에서 현재 저수지 주변을 잘라 분석"""
+@st.cache_resource
+def dem_done_codes() -> set:
+    """DEM 분석을 이미 끝낸 저수지 코드 (모든 접속자 공유) — 처음 보는 저수지는 버튼을 눌러야 분석"""
+    return {str(BASE_CFG["reservoir"]["code"])}
+
+
+def get_dem_analysis(cfg_: dict, run: bool = False):
+    """data/dem/ 의 국토지리정보원 DEM(전국 90m 등)에서 현재 저수지 주변을 잘라 분석.
+    run=False 이면 이미 분석한 저수지만 결과를 돌려주고, 아니면 'not_run' (저수지를 바꿀 때 화면이 멈추지 않도록)"""
     files = demlib.find_dem_files()
     r_ = cfg_["reservoir"]
     if not files:
         return None, "no_file"
     if r_.get("lat") is None:
         return None, "no_coord"
+    code_ = str(r_.get("code", ""))
+    if not run and code_ not in dem_done_codes():
+        return None, "not_run"
+    dem_done_codes().add(code_)
     key = tuple((f.name, f.stat().st_mtime) for f in files)
     try:
         return cached_dem_analysis(key, r_.get("code", ""), r_["lat"], r_["lon"], cfg_["catchment"]["area_km2"],
@@ -138,6 +149,11 @@ def vworld_texture_fn():
     return lambda lon, lat: vworld.texture_for_grid(key, lon, lat, ref)
 
 
+@st.cache_data(show_spinner="위성영상 불러오는 중…", max_entries=16)
+def cached_esri_texture(lon, lat):
+    return imagery.texture_for_grid(lon, lat)
+
+
 def satellite_texture_fn(used: dict):
     """3D 지형에 입힐 위성영상 함수: 브이월드(키가 있으면) → 안 되면 Esri World Imagery(키 없음)"""
     vw = vworld_texture_fn()
@@ -150,7 +166,7 @@ def satellite_texture_fn(used: dict):
                 return rgb
             except Exception:
                 pass
-        rgb = imagery.texture_for_grid(lon, lat)
+        rgb = cached_esri_texture(lon, lat)
         used["src"] = imagery.ATTRIBUTION
         return rgb
     return f
@@ -454,7 +470,7 @@ st.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 st.caption("GR4J 유입량 모형 + 논 담수심 수요량 모형 + pywr 저수지 운영 모델 · 가뭄 단계: 평년 대비 저수율 "
-           "(70% 초과 정상 · 60~70 관심 · 50~60 주의 · 40~50 경계 · 40 이하 심각)")
+           "(70% 초과 정상 · 60–70 관심 · 50–60 주의 · 40–50 경계 · 40 이하 심각)")
 
 tab_status, tab_live, tab_run, tab_cmp, tab_val, tab_dry, tab_info = st.tabs(
     ["저수지 현황", "실시간 운영", "② 모의 실행·대시보드", "③ 시나리오 비교", "④ 모델 검증", "⑤ 가뭄 대응 검증", "모델 개요"])
@@ -608,7 +624,7 @@ with tab_status:
         _stg = RAW_NOW["단계"]
         rw4_.metric("농업가뭄 단계", {"정상": "🟢 정상", "관심": "🟡 관심", "주의": "🟠 주의", "경계": "🔴 경계",
                                   "심각": "⚫ 심각"}.get(_stg, _stg))
-        st.caption("단계 기준(평년 대비 저수율): 70% 초과 정상 · 60~70 관심 · 50~60 주의 · 40~50 경계 · 40 이하 심각 "
+        st.caption("단계 기준(평년 대비 저수율): 70% 초과 정상 · 60–70 관심 · 50–60 주의 · 40–50 경계 · 40 이하 심각 "
                    "(ADMS 농업가뭄관리시스템 저수율지도와 같은 기준) · 자료: " + RAW_SRC
                    + " · 이 단계 기준은 ③의 '공사 가뭄단계 연동' 운영규칙에도 쓰입니다.")
     elif RAW_DF is None:
@@ -713,7 +729,12 @@ with tab_status:
 
     st.markdown("#### 지형(DEM) 기반 유역·저수구역 분석")
     dem_a, dem_state = get_dem_analysis(cfg)
-    if dem_state == "no_file":
+    if dem_state == "not_run":
+        st.caption(f"{RES_NAME} 저수지는 아직 지형 분석을 하지 않았습니다. 한 번 분석하면 다른 접속자도 바로 봅니다.")
+        if st.button("🗺️ 지형(DEM) 3D·유역 분석 실행 (처음 한 번 30초~1분)", key=f"dem_run_{code}"):
+            dem_a, dem_state = get_dem_analysis(cfg, run=True)
+            st.rerun()
+    elif dem_state == "no_file":
         st.info(DEM_HELP)
     elif dem_state == "no_coord":
         st.info("좌표가 없어 DEM 분석을 할 수 없습니다. 사이드바 '위치'에서 좌표를 입력하세요.")
@@ -1188,6 +1209,8 @@ with tab_run:
                            + (" · 연한 파랑 = DEM 측량 당시 수면(그보다 낮은 바닥 지형은 DEM에 없음)" if below_ else ""))
             else:
                 r = cfg["reservoir"]
+                if dem_state == "not_run":
+                    st.caption("'저수지 현황' 탭에서 지형(DEM) 분석을 실행하면 여기에 수면 범위 3D가 표시됩니다.")
                 if dem_state == "no_file":
                     st.caption("data/dem/ 에 국토지리정보원 DEM을 넣으면 여기에 수면 범위 지도가 표시됩니다 ('저수지 현황' 탭 안내 참고).")
                 if r.get("lat") is not None:
