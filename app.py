@@ -304,8 +304,11 @@ with st.sidebar:
                 and abs(_da.basin_area_km2 / _da.target_area_km2 - 1) <= 0.15):
             _lc = _da.lake_center_lonlat(cfg["reservoir"].get("full_level"))
             if _lc:
-                geocode.save_coord(code, RES_NAME, _lc[1], _lc[0], "DEM(만수위 수면 중심)")
-                st.rerun()
+                try:
+                    geocode.save_coord(code, RES_NAME, _lc[1], _lc[0], "DEM(만수위 수면 중심)")
+                    st.rerun()
+                except OSError:
+                    pass  # 다른 접속자가 동시에 저장 중이면 이번엔 건너뜀 (다음 실행 때 다시)
     with st.expander("위치 " + (f"({coords['lat']:.4f}, {coords['lon']:.4f} · {coords['source']})" if coords else "(찾지 못함)")):
         st.caption("주소의 리(里) 중심이라 댐과 수 km 다를 수 있습니다. DEM 분석이 유역면적·표고로 댐 지점을 다시 찾습니다. "
                    "직접 고치려면 지도앱에서 댐 위치를 확인해 입력하세요.")
