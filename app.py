@@ -81,6 +81,16 @@ def cached_esp_compare(_prep, key_: tuple, cfg_: dict, start_, days_: int, cur_:
     return esp.compare_rules(_prep, cfg_, start_, days_, cur_, wts_, extra_, _errs)
 
 
+@st.cache_data(show_spinner=False, max_entries=16)
+def cached_run_esp(_prep, key_: tuple, cfg_: dict, sc_: dict, start_, days_: int, cur_: float, wts_, _errs):
+    return esp.run_esp(_prep, cfg_, Scenario.from_dict(sc_), start_, days_, cur_, wts_, _errs)
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_spi(rain_: pd.Series):
+    return spi.spi(rain_, 3), spi.spi(rain_, 6), spi.current(rain_)
+
+
 @st.cache_data(show_spinner=False, max_entries=2)
 def cached_rawris(_slot: int):
     """RAWRIS 전국 계측 저수지 실시간 저수율 (10분 단위 캐시). 실패하면 (None, 이유)"""
@@ -96,8 +106,10 @@ def cached_hindcast(inputs_: pd.DataFrame, cfg_: dict, obs_rate_: pd.Series, day
 
 
 @st.cache_resource(show_spinner="DEM 지형 분석 중 (저수지마다 처음 한 번, 수십 초)…", max_entries=8)
-def cached_dem_analysis(files_key: tuple, code: str, lat: float, lon: float, target_km2: float,
+def cached_dem_analysis(files_key: tuple, code: str, _lat: float, _lon: float, target_km2: float,
                         full_level: float | None, dam_height: float | None):
+    """저수지 코드·DEM 파일·제원이 같으면 다시 계산하지 않음 (좌표를 수면 중심으로 바로잡아도 재계산 없음 → CPU 절약)"""
+    lat, lon = _lat, _lon
     dcfg = BASE_CFG.get("dem", {})
     grid = demlib.load_dem(crs_override=dcfg.get("crs") or None, max_cells=int(dcfg.get("max_cells", 600000)),
                            center_lonlat=(lon, lat), radius_m=demlib.window_radius_m(target_km2))
@@ -182,7 +194,11 @@ def show_3d(dem_a, ext_, lv, below_, title, exag=2.0, height=560, max_px=180, ke
     except Exception as e:  # 네트워크 차단 등
         st.warning(f"위성영상을 불러오지 못해 표고 색으로 표시합니다 — {e}")
         used = {}
-        fig = surface_figure(dem_a, ext_, lv, below_, title, exag, height, max_px, None)
+        try:
+            fig = surface_figure(dem_a, ext_, lv, below_, title, exag, height, max_px, None)
+        except Exception as e2:  # 지형 자료 자체가 이상하면 3D를 건너뜀 (앱 전체가 멈추지 않도록)
+            st.info(f"이 저수지는 3D 지형을 그릴 수 없습니다 — {e2}")
+            return
     st.plotly_chart(fig, width="stretch")
     st.caption(("배경: " + used["src"] + " · " if used.get("src") else "색 = 표고 · ")
                + "지형: 국토지리정보원 수치표고모델(90m) · 마우스로 돌려 보기")
@@ -966,7 +982,8 @@ with tab_live:
                 rules_["앙상블 최적 규칙"] = esp_opt_
             sel_rule_ = st.selectbox("전망에 쓸 운영규칙", list(rules_),
                                      index=list(rules_).index("앙상블 최적 규칙") if esp_opt_ else 1, key="esp_rule")
-            er_ = esp.run_esp(prep_, cfg, Scenario.from_dict(rules_[sel_rule_].to_dict()), today_, esp_days_, cur_pct, wts_, errs_)
+            er_ = cached_run_esp(prep_, (code, W_MTIME, esp_days_, probs_, bool(errs_), str(g)), cfg,
+                                 rules_[sel_rule_].to_dict(), today_, esp_days_, float(cur_pct), wts_, errs_)
             b_ = er_["band"]
             fig_e = go.Figure()
             for y_, col_ in er_["members"].items():
@@ -1431,8 +1448,7 @@ with tab_dry:
     st.markdown("#### ① 기상가뭄 지수 SPI (표준강수지수)")
     if wfile == "weather_sample.csv":
         st.warning("가상 기상자료입니다. 사이드바에서 기상청 관측자료를 선택하면 실제 SPI가 계산됩니다.")
-    spi3_, spi6_ = spi.spi(weather["rain"], 3), spi.spi(weather["rain"], 6)
-    cur_spi_ = spi.current(weather["rain"])
+    spi3_, spi6_, cur_spi_ = cached_spi(weather["rain"])
     if len(cur_spi_):
         cs_ = st.columns(len(cur_spi_))
         for col_, (_, r_s) in zip(cs_, cur_spi_.iterrows()):
