@@ -108,12 +108,16 @@ def surface_figure(a: DemAnalysis, water: np.ndarray | None = None, level: float
     fig.add_trace(go.Scatter3d(x=[ox / 1000], y=[oy / 1000], z=[oz + 60], mode="markers+text",
                                text=["댐"], textposition="top center",
                                marker=dict(size=6, color="#111827", symbol="diamond"), name="댐"))
-    xr, yr = x.max() - x.min(), y.max() - y.min()
-    zr = (zmax - zmin) / 1000.0 * exaggeration
+    xr, yr = float(x.max() - x.min()), float(y.max() - y.min())
+    zr = float(zmax - zmin) / 1000.0 * exaggeration
     m = max(xr, yr)
+    if not (np.isfinite(m) and m > 0 and np.isfinite(zr)):  # 자료가 거의 없는 격자 → 비율 계산 불가
+        ar = dict(x=1, y=1, z=0.3)
+    else:
+        ar = dict(x=xr / m, y=yr / m, z=max(zr / m, 0.05))
     fig.update_layout(
         title=title, height=height, margin=dict(l=0, r=0, t=40 if title else 0, b=0), showlegend=False,
-        scene=dict(aspectmode="manual", aspectratio=dict(x=xr / m, y=yr / m, z=max(zr / m, 0.05)),
+        scene=dict(aspectmode="manual", aspectratio=ar,
                    xaxis=dict(title="", showbackground=False, showticklabels=False, showgrid=False),
                    yaxis=dict(title="", showbackground=False, showticklabels=False, showgrid=False),
                    zaxis=dict(title="표고 (m)", showbackground=False, showgrid=False),

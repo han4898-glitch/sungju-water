@@ -102,10 +102,20 @@ def load_raster(paths: list[Path], crs_override: str | None, max_cells: int,
             if not crs:
                 raise ValueError("DEM 좌표계를 알 수 없습니다. config [dem] crs 를 지정하세요 (예: EPSG:5179).")
             cx, cy = lonlat_to_xy(center_lonlat[0], center_lonlat[1], crs)
-            if not (left <= cx <= right and bottom <= cy <= top):
+            # 도엽마다 따로 확인 (떨어진 도엽들의 합친 사각형 안이라도 실제 자료가 없으면 범위 밖)
+            if not any(s_.bounds.left <= cx <= s_.bounds.right and s_.bounds.bottom <= cy <= s_.bounds.top for s_ in srcs):
                 raise ValueError("이 저수지 위치가 DEM 범위 밖입니다. 해당 지역 DEM을 data/dem/ 에 추가하세요.")
-            left, right = max(left, cx - radius_m), min(right, cx + radius_m)
-            bottom, top = max(bottom, cy - radius_m), min(top, cy + radius_m)
+            win = (cx - radius_m, cy - radius_m, cx + radius_m, cy + radius_m)
+            srcs_in = [s_ for s_ in srcs if s_.bounds.left < win[2] and s_.bounds.right > win[0]
+                       and s_.bounds.bottom < win[3] and s_.bounds.top > win[1]]
+            for s_ in srcs:
+                if s_ not in srcs_in:
+                    s_.close()
+            srcs[:] = srcs_in
+            left = max(min(s_.bounds.left for s_ in srcs), win[0])
+            right = min(max(s_.bounds.right for s_ in srcs), win[2])
+            bottom = max(min(s_.bounds.bottom for s_ in srcs), win[1])
+            top = min(max(s_.bounds.top for s_ in srcs), win[3])
         ncell = (right - left) * (top - bottom) / res0 ** 2
         res = res0 * max(1.0, float(np.ceil(np.sqrt(ncell / max_cells))))
         kw = dict(bounds=(left, bottom, right, top), res=res, nodata=np.nan)
@@ -122,6 +132,8 @@ def load_raster(paths: list[Path], crs_override: str | None, max_cells: int,
         if nod is not None and not np.isnan(nod):
             z[z == nod] = np.nan
         z[z < -100] = np.nan  # nodata 값(-9999 등) 정리
+        if np.isfinite(z).sum() < 100:
+            raise ValueError("이 저수지 위치가 DEM 범위 밖입니다(자료 없음). 해당 지역 DEM을 data/dem/ 에 추가하세요.")
         return DemGrid(z, t.c, t.f, abs(t.a), crs, [p.name for p in paths])
     finally:
         for s_ in srcs:
