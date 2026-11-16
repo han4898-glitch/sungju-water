@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+import uuid
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -292,24 +294,34 @@ def load_coords() -> pd.DataFrame:
     return pd.DataFrame(columns=COLUMNS)
 
 
+LOCK = threading.RLock()  # 웹앱은 접속자마다 스레드 → 좌표 파일을 동시에 쓰지 않도록
+
+
 def write_coords(df: pd.DataFrame) -> None:
-    """임시 파일에 쓴 뒤 한 번에 바꿔치기 → 동시에 읽는 쪽이 빈 파일을 보지 않음"""
-    tmp = COORDS_CSV.with_suffix(f".tmp{os.getpid()}")
-    df.to_csv(tmp, index=False, encoding="utf-8")
-    for _ in range(5):
+    """임시 파일에 쓴 뒤 한 번에 바꿔치기 → 동시에 읽는 쪽이 빈 파일을 보지 않음.
+    임시 파일 이름은 쓸 때마다 달라야 함(같은 프로세스의 여러 접속자가 서로 지우지 않도록)."""
+    with LOCK:
+        tmp = COORDS_CSV.with_name(f"{COORDS_CSV.stem}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+        df.to_csv(tmp, index=False, encoding="utf-8")
+        for _ in range(5):
+            try:
+                os.replace(tmp, COORDS_CSV)
+                return
+            except PermissionError:
+                time.sleep(0.2)
         try:
             os.replace(tmp, COORDS_CSV)
-            return
-        except PermissionError:
-            time.sleep(0.2)
-    os.replace(tmp, COORDS_CSV)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
 
 
 def save_coord(code: str, name: str, lat: float, lon: float, source: str, query: str = "") -> None:
-    df = load_coords()
-    df = df[df["표준코드"] != str(code)]
-    row = pd.DataFrame([[str(code), name, float(lat), float(lon), source, query]], columns=COLUMNS)
-    write_coords(pd.concat([df, row], ignore_index=True).sort_values("표준코드"))
+    with LOCK:  # 읽고-고치고-쓰기를 한 번에
+        df = load_coords()
+        df = df[df["표준코드"] != str(code)]
+        row = pd.DataFrame([[str(code), name, float(lat), float(lon), source, query]], columns=COLUMNS)
+        write_coords(pd.concat([df, row], ignore_index=True).sort_values("표준코드"))
 
 
 def get_coords(code: str, name: str, address: str, allow_network: bool = True) -> dict | None:

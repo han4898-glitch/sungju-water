@@ -88,6 +88,11 @@ def update_coords(df: pd.DataFrame) -> int:
     """RAWRIS 위치로 좌표 캐시를 채움 (직접 입력(manual)·DEM 수면 중심 좌표는 유지). 바뀐 개수"""
     from . import geocode
 
+    with geocode.LOCK:
+        return _update_coords(df, geocode)
+
+
+def _update_coords(df: pd.DataFrame, geocode) -> int:
     cur = geocode.load_coords().set_index("표준코드")
     n = 0
     for _, r in df.dropna(subset=["lat", "lon"]).iterrows():
