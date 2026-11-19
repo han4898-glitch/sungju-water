@@ -1085,8 +1085,23 @@ with tab_live:
                  "#1f3f8f"),
             ])
             st.success(pr_["summary"].replace("\n", "  \n"))
-            pm_ = pr_["monthly"]
-            st.dataframe(pm_.style.format("{:,.1f}", na_rep="-"), width="stretch")
+            pm_ = pr_["monthly"].copy()
+            _act_m = pr_.get("actual")
+            if _act_m is not None and len(_act_m):
+                # 과거 재현: 그 뒤 실제 월말 저수율과 예측 오차를 같은 표에 (계산에는 쓰지 않은 관측)
+                _am = _act_m.groupby(_act_m.index.strftime("%Y-%m")).last()
+                pm_["실제 월말 저수율(%)"] = _am.reindex(pm_.index)
+                pm_["오차 (실제−중앙, %p)"] = pm_["실제 월말 저수율(%)"] - pm_["월말 저수율 중앙(%)"]
+                pm_["예측 범위"] = np.where(pm_["실제 월말 저수율(%)"].isna(), "-",
+                                         np.where(pm_["실제 월말 저수율(%)"] >= pm_["월말 저수율 하위10%(%)"],
+                                                  "✅ 범위 안", "⚠️ 하위 10% 아래"))
+                _num = [c for c in pm_.columns if c != "예측 범위"]
+                st.dataframe(pm_.style.format({c: "{:,.1f}" for c in _num}, na_rep="-")
+                             .format({"오차 (실제−중앙, %p)": "{:+.1f}"}, na_rep="-"), width="stretch")
+                st.caption("실제 월말 저수율 = 기준일 이후 농어촌공사 관측(계산에는 쓰지 않음) · 오차 = 실제 − 예측 중앙값 · "
+                           "실제가 하위 10% 이상이면 예측 범위 안")
+            else:
+                st.dataframe(pm_.style.format("{:,.1f}", na_rep="-"), width="stretch")
             st.caption(f"권장 규칙: {pr_['rule_name']} — {pr_['rule'].description} · 앙상블 {min(pr_['members'])}~{max(pr_['members'])}년 "
                        f"{len(pr_['members'])}개 해 · 관측 오차 보정 {'적용' if pr_['corrected'] else '미적용'} · "
                        "공급계획 = 각 해 기상으로 모의한 공급량의 가중 평균")
