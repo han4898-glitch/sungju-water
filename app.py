@@ -24,6 +24,7 @@ from engine import dem as demlib
 from engine import geocode
 from engine import vworld
 from engine import imagery
+from engine import report as rptlib
 from engine import kma
 from engine import krc_level
 from engine.realtime import project, today_decision
@@ -341,10 +342,13 @@ with st.sidebar:
     _tried = st.session_state.setdefault("auto_prep_tried", set())
     if code not in _tried:
         _tried.add(code)
-        if kma.get_key() and cfg["reservoir"].get("lat") is not None and not (DATA / auto_name).exists():
-            with st.spinner(f"{RES_NAME}: 인근 기상청 ASOS 관측자료 받는 중… (처음 한 번, 1분 안팎)"):
+        _cached_w = cfg["reservoir"].get("lat") is not None and kma.cache_covers(cfg["reservoir"]["lat"], cfg["reservoir"]["lon"])
+        if (kma.get_key() or _cached_w) and cfg["reservoir"].get("lat") is not None and not (DATA / auto_name).exists():
+            with st.spinner(f"{RES_NAME}: 인근 기상청 ASOS 관측자료 " + ("저장본으로 만드는 중… (몇 초)" if _cached_w
+                                                                  else "받는 중… (처음 한 번, 1분 안팎)")):
                 try:
-                    _, st.session_state["kma_info"] = kma.update_weather(code, cfg["reservoir"]["lat"], cfg["reservoir"]["lon"])
+                    _, st.session_state["kma_info"] = kma.update_weather(code, cfg["reservoir"]["lat"], cfg["reservoir"]["lon"],
+                                                                         start="1973-01-01" if _cached_w else "2015-01-01")
                     st.session_state["wfile"] = auto_name
                 except Exception as e:
                     st.warning(f"기상청 자료 자동 받기 실패 — {e}")
@@ -1057,6 +1061,8 @@ with tab_live:
                 if pd.Timestamp(pl_day_) > pd.Timestamp(_wmax) + pd.Timedelta(days=1) and \
                         pd.Timestamp(pl_day_) < pd.Timestamp.now().normalize() - pd.Timedelta(days=1):
                     raise ValueError(f"기상자료가 {_wmax}까지라 그 이후 날짜는 재현할 수 없습니다.")
+                st.session_state.setdefault("plan_meta_by_code", {})[code] = {
+                    "day": pd.Timestamp(pl_day_), "reserve": pl_res_, "probs": probs_ if "probs_" in dir() else None}
                 st.session_state.setdefault("plan_res_by_code", {})[code] = plan.make_plan(
                     code, cfg, weather, inputs, g, _obs_p, RAW_NOW, fc_future, None, probs_ if "probs_" in dir() else None,
                     pl_res_, True, today=pd.Timestamp(pl_day_), progress=lambda f, t: bar_p.progress(min(f, 1.0), t))
@@ -1074,7 +1080,8 @@ with tab_live:
             _tf = pr_["today_factor"]
             _d0 = pr_.get("daily")
             _irr_today = _d0 is not None and len(_d0) and float(_d0["필요수량(천㎥)"].iloc[0]) > 0.5
-            big_cards([
+            _fig_s = _fig_b = None
+            _cards_ = [
                 ("오늘 공급 비율", f"{_tf:.0%}", "필요수량 대비" + ("" if _irr_today else " · 비관개기(규칙상 비율)"),
                  "#16a34a" if _tf >= 0.95 else ("#ea580c" if _tf >= 0.75 else "#dc2626")),
                 (f"{_end:%m월 %d일} 저수율 (중앙)", f"{_p50:.0f}%", f"나쁜 경우(하위 10%) {_p10:.0f}%",
@@ -1083,7 +1090,8 @@ with tab_live:
                  "#16a34a" if (_sev or 0) < 10 else ("#ea580c" if _sev < 25 else "#dc2626")),
                 ("관개기 공급계획 합계", f"{_supp:,.0f}", f"천㎥ · 필요수량의 {(_supp / _need * 100) if _need > 1 else 0:.0f}%",
                  "#1f3f8f"),
-            ])
+            ]
+            big_cards(_cards_)
             st.success(pr_["summary"].replace("\n", "  \n"))
             pm_ = pr_["monthly"].copy()
             _act_m = pr_.get("actual")
@@ -1123,6 +1131,7 @@ with tab_live:
                                     yaxis2=dict(title="공급 비율 (%)", overlaying="y", side="right", range=[0, 110], showgrid=False),
                                     legend=dict(orientation="h", y=1.12, x=0))
                 st.plotly_chart(fig_s, width="stretch")
+                _fig_s = fig_s
                 st.caption("회색 막대 = 그날 논에 필요한 물(비 온 날은 줄어듦) · 파란 선 = 권장 규칙대로 내보낼 양 "
                            "(53개 해 기상 평균) · 주황 점선 = 필요수량 대비 공급 비율. 저수율이 규칙의 경계 아래로 내려가는 해가 "
                            "많아질수록 공급 비율이 낮아집니다.")
@@ -1142,8 +1151,46 @@ with tab_live:
                 fig_b.update_layout(height=340, margin=dict(l=10, r=10, t=30, b=10), yaxis=dict(title="유효저수율 (%)", range=[0, 100]),
                                     legend=dict(orientation="h", y=1.12, x=0))
                 st.plotly_chart(fig_b, width="stretch")
+                _fig_b = fig_b
                 if _act is not None and len(_act):
                     st.caption("검은 선 = 그 뒤 실제로 관측된 저수율 (계산에는 쓰지 않음). 예측 범위 안에 들어오는지로 예측이 맞았는지 확인합니다.")
+            # ---------------- 결과 내려받기 (인쇄용 보고서 · 표) ----------------
+            try:
+                _meta = st.session_state.get("plan_meta_by_code", {}).get(code, {})
+                _day = pd.Timestamp(_meta.get("day", pr_.get("today", pd.Timestamp.now()))).normalize()
+                _pr = _meta.get("probs")
+                _past = _day < pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+                _cond = [("저수지", f"{RES_NAME} ({cfg['reservoir']['location']})"),
+                         ("총·유효저수량 / 수혜면적", f"{cfg['reservoir']['total_storage']:,.0f} / "
+                          f"{cfg['reservoir'].get('effective_storage', 0):,.0f}천㎥ / {cfg['irrigation']['area_ha']:,.0f}ha"),
+                         ("기준일", f"{_day:%Y-%m-%d}" + (" (과거 재현 — 그날까지의 관측만 사용)" if _past else " (오늘)")),
+                         ("지킬 비상 유효저수율", f"{_meta.get('reserve', '-')}%"),
+                         ("기상청 강수 전망 (적음/비슷/많음)", f"{_pr[0]}/{_pr[1]}/{_pr[2]}%" if _pr else "입력 없음 (33/34/33)"),
+                         ("가뭄 예측 앙상블", f"{min(pr_['members'])}~{max(pr_['members'])}년 {len(pr_['members'])}개 해 기상"),
+                         ("권장 운영규칙", f"{pr_['rule_name']} — {pr_['rule'].description}")]
+                _notes = ["오늘 공급 비율 = 필요수량 대비 오늘 내보낼 비율 (권장 규칙 기준)",
+                          "월말 저수율 중앙/하위 10% = 과거 기상 앙상블로 모의한 저수율의 50%·10% 값 (하위 10% = 나쁜 경우)",
+                          "심각 부족 확률 = 10일 동안 필요수량의 절반 이상이 모자라는 해의 비율",
+                          "공급계획 = 각 해 기상으로 모의한 공급량의 가중 평균 (천㎥)"]
+                if "실제 월말 저수율(%)" in pm_.columns:
+                    _notes.append("실제 월말 저수율 = 기준일 이후 농어촌공사 관측 (계산에는 쓰지 않음), 오차 = 실제 − 예측 중앙값")
+                _html = rptlib.plan_report_html(
+                    RES_NAME, cfg["reservoir"]["location"], pr_.get("now", _now_b),
+                    STAGE_COLOR.get(str(pr_.get("now", _now_b).get("stage")), "#64748b"), _cards_, pr_["summary"], _cond, pm_,
+                    [("5. 관개기 공급량 조절 (일별)", _fig_s, "회색 막대 = 필요수량, 파란 선 = 권장 공급량, 주황 점선 = 공급 비율"),
+                     ("6. 저수율 예측 범위", _fig_b, "하늘색 띠 = 예측 10~90% 범위, 파란 선 = 중앙값"
+                      + (", 검은 선 = 실제 관측 저수율" if _past else ""))],
+                    f"권장 규칙: {pr_['rule_name']} — {pr_['rule'].description}", _notes)
+                _fn = f"{RES_NAME}_공급계획_{_day:%Y%m%d}"
+                dl1_, dl2_ = st.columns(2)
+                dl1_.download_button("📄 분석 결과 보고서 내려받기 (열어서 인쇄·PDF 저장)", _html.encode("utf-8"),
+                                     file_name=f"{_fn}.html", mime="text/html", width="stretch", key="dl_plan_html")
+                dl2_.download_button("📊 월별 공급계획 표 내려받기 (엑셀에서 열림, CSV)",
+                                     pm_.to_csv(encoding="utf-8-sig").encode("utf-8-sig"),
+                                     file_name=f"{_fn}.csv", mime="text/csv", width="stretch", key="dl_plan_csv")
+                st.caption("보고서 파일을 열면 오른쪽 위 ‘🖨 인쇄 / PDF 저장’ 버튼으로 바로 인쇄하거나 PDF로 저장할 수 있습니다.")
+            except Exception as e:
+                st.caption(f"보고서 만들기 실패 — {e}")
 
 
 # =============================================================== 모의 실행 ==
