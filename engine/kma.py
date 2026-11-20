@@ -223,14 +223,111 @@ def combine_stations(frames: dict[int, pd.DataFrame], weights: dict[int, float])
     return out.asfreq("D").interpolate(limit=3)
 
 
-def update_weather(code: str, lat: float, lon: float, start: str = "2015-01-01",
-                   key: tuple[str, str] | None = None, progress=None) -> tuple[Path, dict]:
-    """저수지 기상 시계열을 최신(어제)까지 갱신하고 파일 경로·정보를 돌려줍니다."""
+# ------------------------------------------------- 관측소별 저장 자료 (data/asos) --
+# 경북 주변 ASOS 24개 지점의 1973년~ 일자료를 지점별 파일로 미리 저장해 두면,
+# 어느 저수지든 가까운 3개 지점을 거리 가중평균해 기상청 접속 없이 바로 기상 시계열을 만든다.
+STN_DIR = ROOT / "data" / "asos"
+STN_COLS = ["rain", "tmax", "tmin", "rh", "wind", "sunshine"]
+
+
+def station_path(stn: int) -> Path:
+    return STN_DIR / f"asos_{int(stn)}.csv"
+
+
+def load_station(stn: int) -> pd.DataFrame | None:
+    p = station_path(stn)
+    if not p.exists():
+        return None
+    df = pd.read_csv(p, parse_dates=["date"], index_col="date")
+    return df if len(df) else None
+
+
+def save_station(stn: int, df: pd.DataFrame) -> Path:
+    STN_DIR.mkdir(parents=True, exist_ok=True)
+    p = station_path(stn)
+    out = df[[c for c in STN_COLS if c in df.columns]].sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    out.index.name = "date"
+    tmp = p.with_suffix(".tmp")
+    out.to_csv(tmp)
+    tmp.replace(p)
+    return p
+
+
+def update_station(stn: int, start: str = "1973-01-01", key: tuple[str, str] | None = None,
+                   end: str | None = None) -> dict:
+    """한 지점 저장 자료를 start~어제까지 채움 (이미 있는 기간은 건너뛰고, 끝 7일은 다시 받아 보정값 반영)"""
     key = key or get_key()
     if not key:
         raise RuntimeError("기상청 인증키(KMA_APIHUB_KEY 또는 DATA_GO_KR_KEY)가 없습니다.")
+    end = end or (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    old = load_station(stn)
+    ranges = []
+    if old is None:
+        ranges.append((start, end))
+    else:
+        if pd.Timestamp(start) < old.index.min() - pd.Timedelta(days=1):
+            ranges.append((start, (old.index.min() - pd.Timedelta(days=1)).strftime("%Y-%m-%d")))
+        tail = (old.index.max() - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+        if tail <= end:
+            ranges.append((tail, end))
+    merged = old
+    for a, b in ranges:
+        new = fetch_asos(key, stn, a, b)
+        if not len(new):
+            continue
+        merged = new if merged is None else pd.concat(
+            [merged[(merged.index < new.index.min()) | (merged.index > new.index.max())], new]).sort_index()
+    if merged is None:
+        raise RuntimeError(f"{stn} 지점 자료가 없습니다.")
+    save_station(stn, merged)
+    return {"stn": stn, "first": str(merged.index.min().date()), "last": str(merged.index.max().date()), "days": len(merged)}
+
+
+def cache_covers(lat: float, lon: float, n: int = 3) -> bool:
+    """가까운 n개 지점이 모두 저장돼 있는지"""
+    return all(station_path(s["stn"]).exists() for s in nearest_stations(lat, lon, n))
+
+
+def weather_from_cache(code: str, lat: float, lon: float, start: str = "1973-01-01") -> tuple[Path, dict] | None:
+    """저장된 지점 자료만으로 저수지 기상 파일을 만듦 (기상청 접속 없음). 지점이 하나라도 없으면 None"""
+    stations = nearest_stations(lat, lon, 3)
+    frames = {s["stn"]: load_station(s["stn"]) for s in stations}
+    if any(f is None for f in frames.values()):
+        return None
+    w = combine_stations(frames, {s["stn"]: s["weight"] for s in stations})
+    w = w.loc[pd.Timestamp(start):]
+    w.index.name = "date"
+    path = ROOT / "data" / f"weather_kma_auto_{code}.csv"
+    w.to_csv(path)
+    return path, {"stations": stations, "new_days": len(w), "first": str(w.index.min().date()),
+                  "last": str(w.index.max().date()), "source": "저장된 지점 자료(data/asos)"}
+
+
+def update_weather(code: str, lat: float, lon: float, start: str = "2015-01-01",
+                   key: tuple[str, str] | None = None, progress=None) -> tuple[Path, dict]:
+    """저수지 기상 시계열을 최신(어제)까지 갱신하고 파일 경로·정보를 돌려줍니다.
+    가까운 3개 지점이 data/asos 에 저장돼 있으면 그 자료로 바로 만들고, 저장 자료보다 최근 날짜만 기상청에서 받습니다."""
+    key = key or get_key()
     path = ROOT / "data" / f"weather_kma_auto_{code}.csv"
     stations = nearest_stations(lat, lon, 3)
+    if cache_covers(lat, lon):
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        if key:  # 저장 자료 뒤에 생긴 최근 날짜만 이어 받기 (실패해도 저장 자료로 진행)
+            for i, s in enumerate(stations):
+                last = load_station(s["stn"]).index.max()
+                if last.strftime("%Y-%m-%d") < yesterday:
+                    if progress:
+                        progress(i / len(stations), f"{s['name']}({s['stn']}) 최근 자료 받는 중…")
+                    try:
+                        update_station(s["stn"], start=str(last.date()), key=key)
+                    except Exception:
+                        pass
+        old0 = pd.read_csv(path, usecols=["date"], nrows=1)["date"].iloc[0] if path.exists() else None
+        first = min(start, str(old0)[:10]) if old0 else min(start, "1973-01-01")
+        return weather_from_cache(code, lat, lon, start=first)
+    if not key:
+        raise RuntimeError("기상청 인증키(KMA_APIHUB_KEY 또는 DATA_GO_KR_KEY)가 없습니다.")
     old = pd.read_csv(path, parse_dates=["date"], index_col="date") if path.exists() else None
     yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     ranges = []
