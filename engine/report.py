@@ -44,7 +44,7 @@ def _table(df: pd.DataFrame) -> str:
         cells = []
         for c, v in r.items():
             if isinstance(v, (int, float)) and pd.notna(v):
-                s = f"{v:+.1f}" if "오차" in str(c) else f"{v:,.1f}"
+                s = f"{v:+.1f}" if "오차" in str(c) else (f"{v:,.2f}" if abs(v) < 10 and v != int(v) else f"{v:,.1f}")
             elif v is None or (isinstance(v, float) and pd.isna(v)):
                 s = "-"
             else:
@@ -93,4 +93,44 @@ def plan_report_html(name: str, location: str, now: dict, stage_color: str, card
 <div class="note">{_esc(rule_text)}</div>
 {''.join(fig_html)}
 <h2>읽는 법</h2><ul class="note">{notes_html}</ul>
+</body></html>"""
+
+
+def simple_report_html(title: str, subtitle: str, sections: list[tuple], notes: list[str] | None = None) -> str:
+    """일반 결과 보고서. sections 항목:
+    ("kv", 제목, [(항목, 값), …]) · ("table", 제목, DataFrame) · ("fig", 제목, plotly Figure, 설명)
+    ("text", 제목, 글) · ("cards", 제목, [(제목, 값, 설명, 색), …])"""
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    out, first, n = [], True, 0
+    for sec in sections:
+        kind, head = sec[0], sec[1]
+        if kind == "fig" and sec[2] is None:
+            continue
+        n += 1
+        h = f"<h2>{n}. {_esc(head)}</h2>"
+        if kind == "kv":
+            out.append(h + "<table class='cond'>" + "".join(
+                f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in sec[2]) + "</table>")
+        elif kind == "table":
+            out.append(h + _table(sec[2]))
+        elif kind == "text":
+            out.append(h + f"<div class='box'>{_esc(sec[2])}</div>")
+        elif kind == "cards":
+            out.append(h + "<div class='cards'>" + "".join(
+                f'<div class="card" style="border-left-color:{c}"><div class="t">{_esc(t)}</div>'
+                f'<div class="v" style="color:{c}">{_esc(v)}</div><div class="s">{_esc(s)}</div></div>'
+                for t, v, s, c in sec[2]) + "</div>")
+        elif kind == "fig":
+            f = sec[2].to_html(full_html=False, include_plotlyjs="cdn" if first else False,
+                               config={"displayModeBar": False})
+            first = False
+            desc = sec[3] if len(sec) > 3 else ""
+            out.append(f'<div class="fig">{h}{f}<div class="note">{_esc(desc)}</div></div>')
+    notes_html = ("<h2>읽는 법</h2><ul class='note'>" + "".join(f"<li>{_esc(x)}</li>" for x in notes) + "</ul>") if notes else ""
+    return f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>{_esc(title)}</title>
+<style>{CSS}</style></head><body>
+<button class="printbtn" onclick="window.print()">🖨 인쇄 / PDF 저장</button>
+<h1>💧 {_esc(title)}</h1><div class="sub">{_esc(subtitle)} · 작성 {stamp} · sungju-water.streamlit.app</div>
+{''.join(out)}{notes_html}
 </body></html>"""

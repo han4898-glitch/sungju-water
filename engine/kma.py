@@ -231,7 +231,11 @@ STN_COLS = ["rain", "tmax", "tmin", "rh", "wind", "sunshine"]
 
 
 def station_path(stn: int) -> Path:
-    return STN_DIR / f"asos_{int(stn)}.csv"
+    """data/asos/asos_<지점>.csv (없으면 data/asos_<지점>.csv 도 찾음 — 웹 업로드로 폴더 없이 올라간 경우)"""
+    p = STN_DIR / f"asos_{int(stn)}.csv"
+    if not p.exists() and (STN_DIR.parent / p.name).exists():
+        return STN_DIR.parent / p.name
+    return p
 
 
 def load_station(stn: int) -> pd.DataFrame | None:
