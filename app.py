@@ -1260,9 +1260,10 @@ with tab_run:
         v = s.loc[rng[0]:rng[1]]
 
         g1, g2 = st.columns([3, 2])
+        _rfig_st = _rfig_fl = _rfig_m = None
         with g1:
-            st.plotly_chart(storage_chart({last: type(res)(res.scenario, res.engine, v, res.kpis)}, res.scenario),
-                            width="stretch")
+            _rfig_st = storage_chart({last: type(res)(res.scenario, res.engine, v, res.kpis)}, res.scenario)
+            st.plotly_chart(_rfig_st, width="stretch")
             fig = go.Figure()
             for i, name in enumerate(chosen):
                 fig.add_trace(go.Scatter(x=v.index, y=v[vars_all[name]], name=name, mode="lines",
@@ -1273,6 +1274,7 @@ with tab_run:
                               yaxis2=dict(title="강수 (mm)", overlaying="y", side="right", autorange="reversed", showgrid=False),
                               margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig, width="stretch")
+            _rfig_fl = fig
         with g2:
             st.markdown("**공간 분포: 모의 저수위의 수면 범위**")
             dem_a, dem_state = get_dem_analysis(cfg)
@@ -1310,9 +1312,48 @@ with tab_run:
                 fig.update_layout(barmode="stack", height=300, title="월별 공급·부족 (천㎥)",
                                   margin=dict(l=10, r=10, t=40, b=10), legend=dict(orientation="h", y=-0.2))
                 st.plotly_chart(fig, width="stretch")
+                _rfig_m = fig
         with st.expander("일별 결과표 / CSV 내려받기"):
             st.dataframe(v.round(2), width="stretch")
             st.download_button("CSV 다운로드", v.to_csv().encode("utf-8-sig"), f"{last}.csv", "text/csv")
+        # ---------------- 결과 내려받기 (인쇄용 보고서) ----------------
+        try:
+            _kv = res.kpis
+            _kt = pd.DataFrame({"값": {f"{KPI_LABELS[k][0]}" + (f" ({KPI_LABELS[k][1]})" if KPI_LABELS[k][1] else ""): float(_kv[k])
+                                      for k in KPI_LABELS if k in _kv}})
+            _mm = v[["demand", "supply", "deficit"]].resample("MS").sum()
+            _mm = _mm[_mm["demand"] > 0].rename(columns={"demand": "필요수량(천㎥)", "supply": "공급량(천㎥)", "deficit": "부족량(천㎥)"})
+            _mm["공급 비율(%)"] = _mm["공급량(천㎥)"] / _mm["필요수량(천㎥)"] * 100
+            _mm.index = _mm.index.strftime("%Y-%m")
+            _wk = v["storage_pct"]
+            _cards_r = [("용수공급 만족률", f"{_kv['volumetric_reliability_pct']:.1f}%", "필요수량 중 공급한 비율", "#2563eb"),
+                        ("부족 심도지수 SI", f"{_kv['shortage_index']:.2f}", "작을수록 좋음 (부족이 몰리지 않음)", "#ea580c"),
+                        ("최악 10일 부족률", f"{_kv['worst_10day_shortage_pct']:.0f}%", "가장 나쁜 10일의 부족 비율", "#dc2626"),
+                        ("최저 유효저수율", f"{_kv['min_storage_pct']:.1f}%", f"{_wk.idxmin():%Y-%m-%d}", "#1f3f8f")]
+            _html_r = rptlib.simple_report_html(
+                f"{RES_NAME} 저수지 — 운영 모의 결과", f"{cfg['reservoir']['location']} · {last}",
+                [("kv", "입력 조건", [("운영 시나리오", f"{res.scenario.name} — {res.scenario.description}"),
+                                    ("모의기간 (표시 기간)", f"{v.index.min():%Y-%m-%d} ~ {v.index.max():%Y-%m-%d}"),
+                                    ("시작 유효저수율", f"{initial_pct}%"),
+                                    ("유입량 배율 / 필요수량 배율", f"× {inflow_scale:g} / × {demand_scale:g}"),
+                                    ("기상자료 / 계산 엔진", f"{wfile} / {res.engine}"),
+                                    ("유효저수량 / 수혜면적", f"{cfg['reservoir'].get('effective_storage', 0):,.0f}천㎥ / "
+                                     f"{cfg['irrigation']['area_ha']:,.0f}ha")]),
+                 ("cards", "핵심 결과", _cards_r),
+                 ("table", "성과 지표 전체", _kt),
+                 ("table", "월별 공급·부족", _mm),
+                 ("fig", "저수율 변화", _rfig_st, "점선 = 운영규칙의 저수율 경계(이 아래로 내려가면 공급을 줄임)"),
+                 ("fig", "유량과 강수", _rfig_fl, "선 = 유량(천㎥/일), 위에서 내려오는 막대 = 강수량(mm)"),
+                 ("fig", "월별 공급·부족", _rfig_m, "파랑 = 공급, 빨강 = 부족")],
+                ["용수공급 만족률 = 기간 전체 공급량 ÷ 필요수량",
+                 "부족 심도지수(SI) = 날마다 (부족량÷필요수량)²의 평균 × 100 — 한꺼번에 크게 모자랄수록 커짐",
+                 "최악 10일 부족률 = 가장 나쁜 연속 10일 동안 모자란 비율",
+                 "기말 유효저수율 = 모의 마지막 날 남은 물 (다음 해 대비)"])
+            st.download_button("📄 모의 결과 보고서 내려받기 (열어서 인쇄·PDF 저장)", _html_r.encode("utf-8"),
+                               file_name=f"{RES_NAME}_운영모의_{v.index.min():%Y%m%d}.html", mime="text/html",
+                               width="stretch", key="dl_run_html")
+        except Exception as e:
+            st.caption(f"보고서 만들기 실패 — {e}")
 
 
 # ============================================================ 시나리오 비교 ==
@@ -1391,7 +1432,9 @@ with tab_cmp:
             t2 = tbl[show].astype(float).rename(columns={k: f"{KPI_LABELS[k][0]} ({KPI_LABELS[k][1]})" if KPI_LABELS[k][1] else KPI_LABELS[k][0] for k in show})
             st.dataframe(t2.style.format("{:,.1f}"), width="stretch")
 
-            st.plotly_chart(storage_chart(chosen, chosen[base].scenario, 400), width="stretch")
+            _cfig_st = storage_chart(chosen, chosen[base].scenario, 400)
+            st.plotly_chart(_cfig_st, width="stretch")
+            _cfig_cum = None
 
             c1, c2 = st.columns(2)
             with c1:
@@ -1402,6 +1445,7 @@ with tab_cmp:
                 fig.update_layout(title="누적 부족량 (천㎥)", height=340, margin=dict(l=10, r=10, t=40, b=10),
                                   legend=dict(orientation="h", y=-0.25), hovermode="x unified")
                 st.plotly_chart(fig, width="stretch")
+                _cfig_cum = fig
             with c2:
                 metric = st.selectbox("막대 비교 지표", show, format_func=lambda k: KPI_LABELS[k][0], index=1)
                 fig = go.Figure(go.Bar(x=list(chosen), y=[v.kpis[metric] for v in chosen.values()],
@@ -1410,6 +1454,33 @@ with tab_cmp:
                 st.plotly_chart(fig, width="stretch")
             st.caption("해석: 제한급수는 부족량 총량보다 '부족의 심도'(SI, 최악 10일 부족률)를 줄이고, "
                        "최저 저수율과 기말 이월 저수율을 지켜 다음 해 위험을 낮추는 대신 평상시 공급 만족률이 떨어집니다.")
+            # ---------------- 결과 내려받기 (인쇄용 보고서) ----------------
+            try:
+                _secs = [("kv", "비교 조건", [("저수지", f"{RES_NAME} ({cfg['reservoir']['location']})"),
+                                           ("모의기간", f"{start} ~ {end}"),
+                                           ("시작 유효저수율", f"{initial_pct}%"),
+                                           ("유입량 배율 / 필요수량 배율", f"× {inflow_scale:g} / × {demand_scale:g}"),
+                                           ("차이 계산 기준", base)])]
+                if opt_:
+                    _secs.append(("text", "최적 운영규칙", f"{sc_o.description}\n조건: {opt_['cond']} · {opt_['evaluations']:,}회 모의\n"
+                                  f"부족 심도지수 SI {ko_['shortage_index']:.2f} (관행 {kb_['shortage_index']:.2f}) · "
+                                  f"최악 10일 부족률 {ko_['worst_10day_shortage_pct']:.0f}% (관행 {kb_['worst_10day_shortage_pct']:.0f}%) · "
+                                  f"용수공급 만족률 {ko_['volumetric_reliability_pct']:.1f}% (관행 {kb_['volumetric_reliability_pct']:.1f}%)"))
+                    _secs.append(("table", "최적 규칙의 저수율 구간별 공급 비율", rule_.set_index("유효저수율 구간")))
+                _secs += [("table", "시나리오별 성과 지표", t2),
+                          ("fig", "저수율 변화 비교", _cfig_st, "선마다 하나의 운영규칙 · 점선 = 기준 시나리오의 저수율 경계"),
+                          ("fig", "누적 부족량 비교", _cfig_cum, "위로 갈수록 부족이 많이 쌓임")]
+                _html_c = rptlib.simple_report_html(
+                    f"{RES_NAME} 저수지 — 운영규칙 시나리오 비교", f"{cfg['reservoir']['location']} · {len(chosen)}개 시나리오", _secs,
+                    ["부족 심도지수(SI)·최악 10일 부족률 = 작을수록 좋음 (부족이 한꺼번에 몰리지 않음)",
+                     "용수공급 만족률 = 클수록 좋음 (필요수량 중 공급한 비율)",
+                     "최저·기말 유효저수율 = 클수록 다음 해 위험이 작음",
+                     "제한급수 규칙은 평상시 공급을 조금 줄이는 대신 가뭄 때 큰 부족을 막는 방식"])
+                st.download_button("📄 시나리오 비교 보고서 내려받기 (열어서 인쇄·PDF 저장)", _html_c.encode("utf-8"),
+                                   file_name=f"{RES_NAME}_시나리오비교_{pd.Timestamp(start):%Y%m%d}.html", mime="text/html",
+                                   width="stretch", key="dl_cmp_html")
+            except Exception as e:
+                st.caption(f"보고서 만들기 실패 — {e}")
 
 
 # =============================================================== 모델 검증 ==
