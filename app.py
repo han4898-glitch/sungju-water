@@ -1128,7 +1128,8 @@ with tab_live:
                                            mode="lines", line=dict(color="#ea580c", width=1.5, dash="dot"), yaxis="y2"))
                 fig_s.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), barmode="overlay",
                                     yaxis=dict(title="천㎥/일"),
-                                    yaxis2=dict(title="공급 비율 (%)", overlaying="y", side="right", range=[0, 110], showgrid=False),
+                                    yaxis2=dict(title="공급 비율 (%)", overlaying="y", side="right", range=[0, 110], showgrid=False,
+                                               tickmode="array", tickvals=[0, 20, 40, 60, 80, 100]),
                                     legend=dict(orientation="h", y=1.12, x=0))
                 st.plotly_chart(fig_s, width="stretch")
                 _fig_s = fig_s
