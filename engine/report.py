@@ -25,7 +25,10 @@ th { background: #1f3f8f; color: #fff; padding: 4px 6px; font-weight: 600; }
 td { border: 1px solid #d1d5db; padding: 3px 6px; text-align: right; }
 td:first-child { text-align: center; }
 td:last-child { white-space: nowrap; }
-.cond td { text-align: left; } .cond td:first-child { width: 28%; background: #f8fafc; text-align: left; }
+table.cond { table-layout: fixed; }
+.cond td { text-align: left; padding: 5px 10px; vertical-align: middle; }
+.cond td:first-child { width: 32%; background: #f1f5f9; font-weight: 600; color: #334155; white-space: normal; word-break: keep-all; }
+.cond td:last-child { white-space: normal; word-break: keep-all; }
 .note { color: #6b7280; font-size: 11px; }
 .fig { page-break-inside: avoid; }
 .printbtn { float: right; padding: 6px 14px; border: 0; border-radius: 8px; background: #1f3f8f; color: #fff; cursor: pointer; }
