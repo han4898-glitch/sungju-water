@@ -36,6 +36,25 @@ table.cond { table-layout: fixed; }
 """
 
 
+def _fig_html(fig, include_js) -> str:
+    """앱 화면용 그래프(여백이 좁음)를 보고서용으로: 축 글자·제목·범례가 잘리지 않게 여백·크기 조정 (원본은 그대로)"""
+    try:
+        f = type(fig)(fig)
+    except Exception:
+        return fig.to_html(full_html=False, include_plotlyjs="cdn" if include_js else False,
+                           config={"displayModeBar": False})
+    f.update_layout(autosize=True, width=None, height=max(int(f.layout.height or 340), 360),
+                    margin=dict(l=70, r=70 if any(k.startswith("yaxis2") for k in f.layout.to_plotly_json()) else 30,
+                                t=70, b=60),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    font=dict(size=12), title=None)
+    f.update_yaxes(automargin=True, title_standoff=8)
+    f.update_xaxes(automargin=True)
+    return f.to_html(full_html=False, include_plotlyjs="cdn" if include_js else False,
+                     config={"displayModeBar": False, "responsive": True},
+                     default_width="100%", default_height=f"{f.layout.height}px")
+
+
 def _esc(x) -> str:
     return html.escape(str(x))
 
@@ -74,8 +93,7 @@ def plan_report_html(name: str, location: str, now: dict, stage_color: str, card
     for title, fig, desc in figs:
         if fig is None:
             continue
-        f = fig.to_html(full_html=False, include_plotlyjs="cdn" if first else False,
-                        config={"displayModeBar": False, "staticPlot": False})
+        f = _fig_html(fig, first)
         first = False
         fig_html.append(f'<div class="fig"><h2>{_esc(title)}</h2>{f}<div class="note">{_esc(desc)}</div></div>')
     notes_html = "".join(f"<li>{_esc(n)}</li>" for n in notes)
@@ -124,8 +142,7 @@ def simple_report_html(title: str, subtitle: str, sections: list[tuple], notes: 
                 f'<div class="v" style="color:{c}">{_esc(v)}</div><div class="s">{_esc(s)}</div></div>'
                 for t, v, s, c in sec[2]) + "</div>")
         elif kind == "fig":
-            f = sec[2].to_html(full_html=False, include_plotlyjs="cdn" if first else False,
-                               config={"displayModeBar": False})
+            f = _fig_html(sec[2], first)
             first = False
             desc = sec[3] if len(sec) > 3 else ""
             out.append(f'<div class="fig">{h}{f}<div class="note">{_esc(desc)}</div></div>')
